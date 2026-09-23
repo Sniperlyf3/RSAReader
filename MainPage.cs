@@ -44,12 +44,24 @@ public sealed class MainPage : ContentPage
     {
         base.OnAppearing();
 #if ANDROID
-        _adapter = NfcAdapter.GetDefaultAdapter(Platform.CurrentActivity);
-        if (_adapter is null) { _status.Text = "This phone does not support NFC."; return; }
-        if (!_adapter.IsEnabled) { _status.Text = "Enable NFC in Android settings."; return; }
-        _status.Text = "NFC ready. Tap your card.";
-        _adapter.EnableReaderMode(Platform.CurrentActivity!, _reader,
-            NfcReaderFlags.NfcA | NfcReaderFlags.NfcB | NfcReaderFlags.SkipNdefCheck, null);
+        try
+        {
+            var activity = Platform.CurrentActivity;
+            _adapter = NfcAdapter.GetDefaultAdapter(Android.App.Application.Context);
+            if (_adapter is null) { _status.Text = "This phone does not support NFC."; return; }
+            if (!_adapter.IsEnabled) { _status.Text = "Enable NFC in Android settings."; return; }
+            if (activity is null) { _status.Text = "NFC ready. Open this page again to start scanning."; return; }
+
+            _status.Text = "NFC ready. Tap your card.";
+            _adapter.EnableReaderMode(activity, _reader,
+                NfcReaderFlags.NfcA | NfcReaderFlags.NfcB | NfcReaderFlags.SkipNdefCheck, null);
+        }
+        catch (Exception ex)
+        {
+            // NFC initialization must never prevent the app itself from opening.
+            _status.Text = "NFC initialization failed.";
+            _scan.Text = ex.Message;
+        }
 #endif
     }
 
