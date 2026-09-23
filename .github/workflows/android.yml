@@ -30,9 +30,22 @@ jobs:
       - name: Build APK
         run: dotnet publish RSAReader.csproj -f net9.0-android -c Debug -p:AndroidPackageFormats=apk -o artifacts
 
-      - name: Upload APK
+      - name: Stage signed APK only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          mapfile -t signed_apks < <(find artifacts -type f -name '*-Signed.apk' -print)
+          if [ "${#signed_apks[@]}" -ne 1 ]; then
+            echo "Expected exactly one signed APK, found ${#signed_apks[@]}"
+            printf '%s\n' "${signed_apks[@]}"
+            exit 1
+          fi
+          cp "${signed_apks[0]}" upload/RSAReader.apk
+
+      - name: Upload signed APK
         uses: actions/upload-artifact@v4
         with:
           name: RSAReader-apk
-          path: artifacts/**/*.apk
+          path: upload/RSAReader.apk
           if-no-files-found: error
