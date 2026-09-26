@@ -18,4 +18,10 @@ sensitive.Observe("PuKDF", [0x50, 0x02], 0x9000,
     Convert.FromHexString("3016300F0C0D53414D504C4520504552534F4E30050403010203"));
 if (sensitive.Analyze().ToJson().Contains("SAMPLE PERSON"))
     throw new Exception("Unrecognized PKCS#15 label leaked to export.");
+var key = new Pkcs15Collector();
+key.Observe("PuKDF", [0x50, 0x02], 0x9000,
+    Convert.FromHexString("3019300A0C045465737403020640300B0402AABB03020520020103"));
+var decodedKey = key.Analyze().Objects.Single();
+if (decodedKey.KeyIdHash is null || decodedKey.Usage != "sign")
+    throw new Exception("Key ID or usage was decoded from the wrong PKCS#15 attribute sequence.");
 Console.WriteLine("Research fixture replay and directory decoding passed.");

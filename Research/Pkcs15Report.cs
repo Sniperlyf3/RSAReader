@@ -98,21 +98,22 @@ public sealed class Pkcs15Collector
             {
                 if (record.Tag != 0x30) continue;
                 var common = record.Children.FirstOrDefault();
+                var classAttrs = record.Children.Skip(1).FirstOrDefault();
                 var label = common?.Child(0x0C) is { } labelNode ? SafeLabel(Encoding.UTF8.GetString(labelNode.Value)) : null;
-                var ids = record.Descendants(0x04).Where(x => x.Value.Length == 20).Select(x => x.Value).ToList();
-                var idHash = ids.Count > 0 ? Hash(ids[0]) : null;
+                var keyId = classAttrs?.Child(0x04)?.Value;
+                var idHash = keyId is { Length: > 0 } ? Hash(keyId) : null;
                 // ObjectValue.indirect is a Path SEQUENCE in the type attributes.
                 // A path OCTET STRING is constrained to 2/4/6 bytes and begins in
                 // the file-system tree, preventing a key identifier being mistaken for it.
                 var path = record.Descendants(0x04).Select(x => x.Value)
                     .Where(x => x.Length is 2 or 4 or 6 && x[0] is 0x3F or 0x50 or 0xB0 or 0xB1)
                     .LastOrDefault();
-                var bits = record.Descendants(0x03).Select(x => x.Value).ToList();
-                var usage = kind.Contains("key", StringComparison.OrdinalIgnoreCase) && bits.Count > 1
-                    ? BitNames(bits[1], ["encrypt", "decrypt", "sign", "signRecover", "wrap", "unwrap", "verify", "verifyRecover", "derive", "nonRepudiation"])
+                var bits = classAttrs?.Children.Where(x => x.Tag == 0x03).Select(x => x.Value).ToList() ?? [];
+                var usage = kind.Contains("key", StringComparison.OrdinalIgnoreCase) && bits.Count > 0
+                    ? BitNames(bits[0], ["encrypt", "decrypt", "sign", "signRecover", "wrap", "unwrap", "verify", "verifyRecover", "derive", "nonRepudiation"])
                     : null;
-                var access = kind == "Private key" && bits.Count > 2
-                    ? BitNames(bits[2], ["sensitive", "extractable", "alwaysSensitive", "neverExtractable", "local"])
+                var access = kind == "Private key" && bits.Count > 1
+                    ? BitNames(bits[1], ["sensitive", "extractable", "alwaysSensitive", "neverExtractable", "local"])
                     : null;
                 Report.Objects.Add(new ObjectObservation(fid, kind, label, idHash,
                     path is null ? null : Convert.ToHexString(path), usage, access, null));
