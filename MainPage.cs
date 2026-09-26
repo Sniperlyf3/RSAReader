@@ -36,6 +36,24 @@ public sealed class MainPage : ContentPage
         IsPassword = true
     };
     private readonly Label _decoded = new() { Text = "Nothing decoded yet.", LineBreakMode = LineBreakMode.WordWrap };
+    private readonly Entry _bacDocInput = new()
+    {
+        Placeholder = "Document / ID number (as printed on the card)",
+        MaxLength = 20
+    };
+    private readonly Entry _bacDobInput = new()
+    {
+        Placeholder = "Date of birth YYMMDD",
+        Keyboard = Keyboard.Numeric,
+        MaxLength = 6
+    };
+    private readonly Entry _bacExpInput = new()
+    {
+        Placeholder = "Date of expiry YYMMDD",
+        Keyboard = Keyboard.Numeric,
+        MaxLength = 6
+    };
+    private readonly Label _bacOutput = new() { Text = "No chip read attempted.", LineBreakMode = LineBreakMode.WordWrap };
 
 #if ANDROID
     private NfcAdapter? _adapter;
@@ -66,6 +84,8 @@ public sealed class MainPage : ContentPage
         sendApdu.Clicked += async (_, _) => await SendApduAsync(sendApdu);
         var probeApplications = new Button { Text = "Probe common applications" };
         probeApplications.Clicked += async (_, _) => await ProbeApplicationsAsync(probeApplications);
+        var readChip = new Button { Text = "Read chip data (BAC)" };
+        readChip.Clicked += async (_, _) => await ReadChipAsync(readChip);
         var decode = new Button { Text = "Decode entered ID number" };
         decode.Clicked += (_, _) => _decoded.Text = IdDecoder.Decode(_idInput.Text ?? "");
         var clear = new Button { Text = "Clear displayed information" };
@@ -76,6 +96,10 @@ public sealed class MainPage : ContentPage
             _apduInput.Text = "";
             _apduOutput.Text = "No command sent.";
             _discoveryOutput.Text = "No application probes sent.";
+            _bacDocInput.Text = "";
+            _bacDobInput.Text = "";
+            _bacExpInput.Text = "";
+            _bacOutput.Text = "No chip read attempted.";
             _scan.Text = "Hold a Smart ID against the phone. The app does not save card data.";
             _status.Text = "Ready to scan";
 #if ANDROID
@@ -110,6 +134,17 @@ public sealed class MainPage : ContentPage
                     },
                     probeApplications,
                     _discoveryOutput,
+                    new Label { Text = "Read chip data (BAC)", FontSize = 20, FontAttributes = FontAttributes.Bold },
+                    new Label
+                    {
+                        Text = "Enter the details printed on your own card, then hold the card to the phone and tap the button. These values derive the ICAO 9303 Basic Access Control key, so only the person holding the card can unlock it. Data read from the chip is shown on this screen only and is not saved.",
+                        LineBreakMode = LineBreakMode.WordWrap
+                    },
+                    _bacDocInput,
+                    _bacDobInput,
+                    _bacExpInput,
+                    readChip,
+                    _bacOutput,
                     new Label { Text = "Manual fallback: SA ID number", FontSize = 20, FontAttributes = FontAttributes.Bold },
                     new Label
                     {
@@ -222,6 +257,46 @@ public sealed class MainPage : ContentPage
         }
 #else
         _apduOutput.Text = "NFC/APDU communication is available on Android only.";
+#endif
+    }
+
+    private async Task ReadChipAsync(Button readButton)
+    {
+#if ANDROID
+        if (_apduBusy) return;
+        if (_isoDep is null)
+        {
+            _bacOutput.Text = "Scan an ISO-DEP card first.";
+            return;
+        }
+
+        var doc = _bacDocInput.Text ?? "";
+        var dob = _bacDobInput.Text ?? "";
+        var exp = _bacExpInput.Text ?? "";
+
+        _apduBusy = true;
+        readButton.IsEnabled = false;
+        _bacOutput.Text = "Authenticating with the chip… Keep the card against the phone.";
+        try
+        {
+            var result = await Task.Run(() => new Emrtd(Transceive).ReadDg1(doc, dob, exp));
+            _bacOutput.Text = result.Summary;
+        }
+        catch (EmrtdException ex)
+        {
+            _bacOutput.Text = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            _bacOutput.Text = $"Chip read failed: {ex.GetType().Name}: {ex.Message}";
+        }
+        finally
+        {
+            _apduBusy = false;
+            readButton.IsEnabled = true;
+        }
+#else
+        _bacOutput.Text = "Chip reading is available on Android only.";
 #endif
     }
 
