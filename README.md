@@ -58,6 +58,8 @@ The current decoder walks bounded ASN.1 TLVs and extracts PKCS#15 object labels,
 
 Synthetic redacted replay fixtures live in `tests/ResearchReplay`. Run them with `dotnet run --project tests/ResearchReplay/ResearchReplay.csproj`. They exercise report import/export and directory parsing without distributing a cardholder's data. A real capture can be compared through the research page, but the redacted export cannot replay cryptographic parsing of the original certificate; that would require a separately consented, carefully scrubbed fixture.
 
+One observed card certificate has policy OID `2.16.840.1.114028.10.2.1`, which also appears in [LAWtrust's certificate-practice statement](https://www.lawtrust.co.za/wp-content/uploads/2023/11/LT_ISP_IS_CPS_LT2048CA2_V009-2023-09-01.pdf). This is a lead for issuer-chain research, not evidence that the card certificate chains to LAWtrust: the issuing CA certificate, signature path and trust anchor still need independent verification.
+
 NFC is optional for installation; the ID-number decoder remains available on devices without NFC.
 
 ## Protocol research status
