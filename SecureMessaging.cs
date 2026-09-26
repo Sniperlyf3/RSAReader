@@ -52,23 +52,13 @@ internal sealed class SecureMessaging : ISecureMessaging
         return data.ToArray();
     }
 
-    public byte[] ReadEntireFile()
+    public byte[] ReadEntireFile() => SmRead.WholeFileByRecords(ReadChunk);
+
+    private byte[] ReadChunk(int offset, int length)
     {
-        var data = new List<byte>();
-        var offset = 0;
-        const int cap = 0x4000;
-        while (offset < cap)
-        {
-            var want = Math.Min(0xDF, cap - offset);
-            var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0x7F), (byte)(offset & 0xFF) };
-            var (sw, part) = SendRaw(header, null, expectResponse: true, le: (byte)want);
-            if (sw != 0x9000 && sw != 0x6282) break;
-            if (part.Length == 0) break;
-            data.AddRange(part);
-            offset += part.Length;
-            if (sw == 0x6282 || part.Length < want) break; // reached end of file
-        }
-        return data.ToArray();
+        var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0x7F), (byte)(offset & 0xFF) };
+        var (sw, part) = SendRaw(header, null, expectResponse: true, le: (byte)length);
+        return sw is 0x9000 or 0x6282 ? part : Array.Empty<byte>();
     }
 
     private byte[] ReadBinary(int offset, int length)
