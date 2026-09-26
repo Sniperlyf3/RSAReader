@@ -30,6 +30,6 @@
   </ItemGroup>
   <ItemGroup>
     <!-- Full trimming must not strip the crypto types PACE resolves through BouncyCastle. -->
-    <TrimmerRootAssembly Include="BouncyCastle.Cryptography" />
+    <TrimmerRootAssembly Include="BouncyCastle.Cryptography" RootMode="all" />
   </ItemGroup>
 </Project>
