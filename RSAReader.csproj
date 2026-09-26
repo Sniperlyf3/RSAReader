@@ -11,5 +11,12 @@
     <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
     <ApplicationVersion>1</ApplicationVersion>
     <SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
+    <!-- CI distributes the Debug APK directly; it must contain its managed assemblies. -->
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="9.0.0" />
+    <MauiIcon Include="Resources\AppIcon\appicon.svg" />
+    <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#102A43" BaseSize="128,128" />
+  </ItemGroup>
 </Project>
