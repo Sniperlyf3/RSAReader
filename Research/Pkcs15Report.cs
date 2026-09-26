@@ -101,9 +101,10 @@ public sealed class Pkcs15Collector
         {
             foreach (var outer in Asn1Tree.Read(data))
             {
-                // EC key types are context-tagged CHOICE arms (A0); RSA is an
-                // untagged SEQUENCE. Both contain the same PKCS15Object shell.
-                var record = outer.Tag == 0x30 ? outer : outer.Tag == 0xA0 ? outer.Child(0x30) : null;
+                // PKCS#15 uses an IMPLICIT [0] CHOICE arm for EC keys. Its A0
+                // value contains the PKCS15Object fields directly (common,
+                // class, type), with no extra SEQUENCE around them.
+                var record = outer.Tag is 0x30 or 0xA0 ? outer : null;
                 if (record is null) continue;
                 var objectKind = kind.Contains("key", StringComparison.OrdinalIgnoreCase)
                     ? kind + (outer.Tag == 0xA0 ? " (EC)" : " (RSA)") : kind;

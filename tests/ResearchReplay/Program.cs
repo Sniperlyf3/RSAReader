@@ -26,9 +26,10 @@ if (decodedKey.KeyIdHash is null || decodedKey.Usage != "sign")
     throw new Exception("Key ID or usage was decoded from the wrong PKCS#15 attribute sequence.");
 var ec = new Pkcs15Collector();
 ec.Observe("PuKDF", [0x50, 0x02], 0x9000,
-    Convert.FromHexString("A01B3019300A0C045465737403020640300B0402AABB03020520020103"));
-if (ec.Analyze().Objects.Single().Kind != "Public key (EC)")
-    throw new Exception("Context-tagged EC public key was not decoded.");
+    Convert.FromHexString("A019300A0C045465737403020640300B0402AABB03020520020103"));
+var decodedEc = ec.Analyze().Objects.Single();
+if (decodedEc.Kind != "Public key (EC)" || decodedEc.KeyIdHash != decodedKey.KeyIdHash || decodedEc.Usage != "sign")
+    throw new Exception("IMPLICIT context-tagged EC public-key attributes were not decoded.");
 var opaque = System.Text.Encoding.ASCII.GetBytes("Label with a non-TLV length");
 var recovered = OpaqueFileRead.WholeFile((offset, length) => offset + length <= opaque.Length
     ? opaque.AsSpan(offset, length).ToArray() : []);

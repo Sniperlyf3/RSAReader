@@ -245,6 +245,12 @@ public sealed class Pace
             var (sw, body) = TryReadFile(sm, efid);
             _collector?.Observe(label, efid, sw, body);
             report.AppendLine($"• {label} ({Hex(efid)}): {ReadStatus(sw)}" + (body.Length > 0 ? $" -> {Hex(body)}" : ""));
+            if (efid is [0x50, 0x01] && sw == 0x9000 && body.Length == 0)
+            {
+                var readStatus = sm.ProbeReadByteStatus();
+                report.AppendLine($"  READ BINARY offset 0, Le=1: {readStatus:X4}");
+                _collector?.Report.Findings.Add($"PrKDF one-byte READ BINARY returned {readStatus:X4}; SELECT 9000 alone does not establish private-key availability.");
+            }
             if (label.StartsWith("CDF") && body.Length > 0) cdf = body;
             if (label.StartsWith("DODF") && body.Length > 0) dodf = body;
         }

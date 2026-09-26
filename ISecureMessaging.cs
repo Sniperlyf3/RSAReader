@@ -22,4 +22,7 @@ internal interface ISecureMessaging
 
     /// <summary>Reads a transparent EF that may contain opaque non-TLV bytes.</summary>
     byte[] ReadOpaqueFile();
+
+    /// <summary>Returns the status of a read-only one-byte probe on the selected EF.</summary>
+    int ProbeReadByteStatus();
 }
