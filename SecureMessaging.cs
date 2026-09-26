@@ -54,6 +54,8 @@ internal sealed class SecureMessaging : ISecureMessaging
 
     public byte[] ReadEntireFile() => SmRead.WholeFileByRecords(ReadChunk);
 
+    public byte[] ReadOpaqueFile() => Research.OpaqueFileRead.WholeFile(ReadChunk);
+
     private byte[] ReadChunk(int offset, int length)
     {
         var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0x7F), (byte)(offset & 0xFF) };
