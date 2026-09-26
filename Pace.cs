@@ -229,11 +229,31 @@ public sealed class Pace
 
         // 4. ODF points to the per-type directory files (certificates, data objects, keys). Read each.
         var cdf = Array.Empty<byte>();
+        var dodf = Array.Empty<byte>();
         foreach (var (label, efid) in ParseOdfDirectoryFids(odf))
         {
             var (sw, body) = TryReadFile(sm, efid);
             report.AppendLine($"• {label} ({Hex(efid)}): {sw:X4}" + (body.Length > 0 ? $" -> {Hex(body)}" : ""));
             if (label.StartsWith("CDF") && body.Length > 0) cdf = body;
+            if (label.StartsWith("DODF") && body.Length > 0) dodf = body;
+        }
+
+        // 4b. Read the EFs the DODF data objects point to (their actual stored values).
+        if (dodf.Length > 0)
+        {
+            report.AppendLine();
+            report.AppendLine("Data objects:");
+            foreach (var (label, fid) in ExtractObjectPaths(dodf))
+            {
+                var sw = sm.TrySelectFile(fid);
+                if (sw != 0x9000)
+                {
+                    report.AppendLine($"• {label} ({Hex(fid)}): SELECT {sw:X4}");
+                    continue;
+                }
+                var body = sm.ReadEntireFile();
+                report.AppendLine($"• {label} ({Hex(fid)}): {body.Length} bytes -> {Hex(body)}");
+            }
         }
 
         // 5. Read the X.509 certificates the CDF references; their subject usually carries the
@@ -267,7 +287,7 @@ public sealed class Pace
         }
 
         report.AppendLine();
-        report.Append("This application is the card's PKI (keys, certificates, PINs). Demographic data and the photo are likely behind Home Affairs application keys that a CAN does not grant; the certificate subjects above are the identity data reachable this way.");
+        report.Append("Gemalto PKCS#15 application read over PACE. Certificate subjects and data-object contents above show what this CAN-authenticated channel exposes.");
         return new Emrtd.Result(string.Empty, report.ToString());
     }
 
