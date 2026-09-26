@@ -1,4 +1,5 @@
 using System.Text;
+using RSAReader.Research;
 #if ANDROID
 using Android.Nfc;
 using Android.Nfc.Tech;
@@ -69,6 +70,7 @@ public sealed class MainPage : ContentPage
         HeightRequest = 240,
         Placeholder = "Raw APDU log (TX/RX hex) appears here after a read."
     };
+    private Pkcs15Report? _researchReport;
 
 #if ANDROID
     private NfcAdapter? _adapter;
@@ -103,13 +105,8 @@ public sealed class MainPage : ContentPage
         readChip.Clicked += async (_, _) => await ReadChipAsync(readChip);
         var readChipPace = new Button { Text = "Read chip data (PACE / CAN)" };
         readChipPace.Clicked += async (_, _) => await ReadChipPaceAsync(readChipPace);
-        var copyLog = new Button { Text = "Copy log" };
-        copyLog.Clicked += async (_, _) =>
-        {
-            var text = string.IsNullOrEmpty(_paceLog.Text) ? _paceOutput.Text : $"{_paceOutput.Text}\n\n{_paceLog.Text}";
-            await Clipboard.Default.SetTextAsync(text);
-            copyLog.Text = "Copied";
-        };
+        var research = new Button { Text = "Open PKCS#15 research" };
+        research.Clicked += async (_, _) => await Navigation.PushAsync(new ResearchPage(_researchReport));
         var decode = new Button { Text = "Decode entered ID number" };
         decode.Clicked += (_, _) => _decoded.Text = IdDecoder.Decode(_idInput.Text ?? "");
         var clear = new Button { Text = "Clear displayed information" };
@@ -127,6 +124,7 @@ public sealed class MainPage : ContentPage
             _canInput.Text = "";
             _paceOutput.Text = "No chip read attempted.";
             _paceLog.Text = "";
+            _researchReport = null;
             _scan.Text = "Hold a Smart ID against the phone. The app does not save card data.";
             _status.Text = "Ready to scan";
 #if ANDROID
@@ -183,11 +181,11 @@ public sealed class MainPage : ContentPage
                     _paceOutput,
                     new Label
                     {
-                        Text = "Raw APDU log. Secure-messaging commands are encrypted on the wire, so this log contains no personal data and is safe to share.",
+                        Text = "Raw APDU log for local troubleshooting. Treat it as sensitive: it includes card identifiers and cryptographic session data. Use the redacted research report for sharing.",
                         LineBreakMode = LineBreakMode.WordWrap
                     },
                     _paceLog,
-                    copyLog,
+                    research,
                     new Label { Text = "Manual fallback: SA ID number", FontSize = 20, FontAttributes = FontAttributes.Bold },
                     new Label
                     {
@@ -378,9 +376,12 @@ public sealed class MainPage : ContentPage
         readButton.IsEnabled = false;
         _paceOutput.Text = "Authenticating with the chip (PACE)… Keep the card against the phone.";
         _paceLog.Text = "";
+        _researchReport = null;
         try
         {
-            var result = await Task.Run(() => new Pace(logged).ReadDg1WithCan(can));
+            var collector = new Pkcs15Collector();
+            var result = await Task.Run(() => new Pace(logged, collector).ReadDg1WithCan(can));
+            _researchReport = collector.Analyze();
             _paceOutput.Text = result.Summary;
         }
         catch (EmrtdException ex)

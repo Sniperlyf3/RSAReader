@@ -13,6 +13,7 @@ using Org.BouncyCastle.Math.EC;
 using Org.BouncyCastle.Security;
 using BcBigInteger = Org.BouncyCastle.Math.BigInteger;
 using BcEcPoint = Org.BouncyCastle.Math.EC.ECPoint;
+using RSAReader.Research;
 
 namespace RSAReader;
 
@@ -28,8 +29,13 @@ namespace RSAReader;
 public sealed class Pace
 {
     private readonly Func<byte[], byte[]> _transceive;
+    private readonly Pkcs15Collector? _collector;
 
-    public Pace(Func<byte[], byte[]> transceive) => _transceive = transceive;
+    public Pace(Func<byte[], byte[]> transceive, Pkcs15Collector? collector = null)
+    {
+        _transceive = transceive;
+        _collector = collector;
+    }
 
     private enum CipherAlg { Aes, TripleDes }
 
@@ -208,7 +214,8 @@ public sealed class Pace
 
         // 2. Otherwise read EF.DIR (application directory; identifiers only, no personal data).
         var (swDir, dir) = TryReadFile(sm, new byte[] { 0x2F, 0x00 });
-        report.AppendLine($"• EF.DIR (2F00): {swDir:X4}" + (dir.Length > 0 ? $" -> {Hex(dir)}" : ""));
+        _collector?.Observe("EF.DIR", [0x2F, 0x00], swDir, dir);
+        report.AppendLine($"• EF.DIR (2F00): {ReadStatus(swDir)}" + (dir.Length > 0 ? $" -> {Hex(dir)}" : ""));
 
         var aid = swDir == 0x9000 ? FindTag(FindTag(dir, 0x61) ?? dir, 0x4F) : null;
         if (aid is null)
@@ -219,13 +226,16 @@ public sealed class Pace
 
         // 3. Select that application and walk its PKCS#15 object directory (ODF).
         var swApp = sm.TrySelectApplication(aid);
+        _collector?.SetApplication(aid);
         report.AppendLine($"• SELECT app {Hex(aid)}: {swApp:X4}");
 
         var (swOdf, odf) = TryReadFile(sm, new byte[] { 0x50, 0x31 }); // EF.ODF, reserved FID 5031
-        report.AppendLine($"• EF.ODF (5031): {swOdf:X4}" + (odf.Length > 0 ? $" -> {Hex(odf)}" : ""));
+        _collector?.Observe("EF.ODF", [0x50, 0x31], swOdf, odf);
+        report.AppendLine($"• EF.ODF (5031): {ReadStatus(swOdf)}" + (odf.Length > 0 ? $" -> {Hex(odf)}" : ""));
 
         var (swTi, ti) = TryReadFile(sm, new byte[] { 0x50, 0x32 }); // EF.TokenInfo, reserved FID 5032
-        report.AppendLine($"• EF.TokenInfo (5032): {swTi:X4}" + (ti.Length > 0 ? $" -> {Hex(ti)}" : ""));
+        _collector?.Observe("EF.TokenInfo", [0x50, 0x32], swTi, ti);
+        report.AppendLine($"• EF.TokenInfo (5032): {ReadStatus(swTi)}" + (ti.Length > 0 ? $" -> {Hex(ti)}" : ""));
 
         // 4. ODF points to the per-type directory files (certificates, data objects, keys). Read each.
         var cdf = Array.Empty<byte>();
@@ -233,7 +243,8 @@ public sealed class Pace
         foreach (var (label, efid) in ParseOdfDirectoryFids(odf))
         {
             var (sw, body) = TryReadFile(sm, efid);
-            report.AppendLine($"• {label} ({Hex(efid)}): {sw:X4}" + (body.Length > 0 ? $" -> {Hex(body)}" : ""));
+            _collector?.Observe(label, efid, sw, body);
+            report.AppendLine($"• {label} ({Hex(efid)}): {ReadStatus(sw)}" + (body.Length > 0 ? $" -> {Hex(body)}" : ""));
             if (label.StartsWith("CDF") && body.Length > 0) cdf = body;
             if (label.StartsWith("DODF") && body.Length > 0) dodf = body;
         }
@@ -252,6 +263,7 @@ public sealed class Pace
                     continue;
                 }
                 var body = sm.ReadEntireFile();
+                _collector?.Observe("Data object value", fid, sw, body);
                 report.AppendLine($"• {label} ({Hex(fid)}): {body.Length} bytes -> {Hex(body)}");
             }
         }
@@ -271,6 +283,7 @@ public sealed class Pace
                     continue;
                 }
                 var raw = sm.ReadEntireFile();
+                _collector?.Observe("Certificate value", fid, sw, raw);
                 try
                 {
                     var cert = new Org.BouncyCastle.X509.X509CertificateParser().ReadCertificate(raw);
@@ -376,6 +389,8 @@ public sealed class Pace
             : Convert.ToHexString(data[..max]) + $"… (+{data.Length - max} bytes)";
     }
 
+    private static string ReadStatus(int sw) => sw == 0xFFFF ? "SELECT 9000; READ FAILED" : $"{sw:X4}";
+
     /// <summary>Extracts the per-type directory-file identifiers listed in a PKCS#15 ODF.</summary>
     private static IEnumerable<(string Label, byte[] Fid)> ParseOdfDirectoryFids(byte[] odf)
     {
@@ -433,7 +448,7 @@ public sealed class Pace
         if (sw != 0x9000) return (sw, Array.Empty<byte>());
         // PKCS#15 files are concatenated records, so read to end of file rather than by TLV length.
         try { return (sw, sm.ReadEntireFile()); }
-        catch (EmrtdException) { return (sw, Array.Empty<byte>()); }
+        catch (EmrtdException) { return (0xFFFF, Array.Empty<byte>()); } // sentinel: SELECT succeeded; READ failed
     }
 
     // ----- key derivation and MAC ---------------------------------------------
