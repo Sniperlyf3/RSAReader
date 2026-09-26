@@ -199,45 +199,112 @@ public sealed class Pace
             : new SecureMessaging(_transceive, ksEnc, ksMac, new byte[8]);
 
         var report = new StringBuilder();
-        report.AppendLine("PACE authentication succeeded. Card structure probe:");
+        report.AppendLine("PACE OK. Card structure probe:");
 
-        // 1. Standard ICAO eMRTD application, then EF.DG1.
-        var aid = new byte[] { 0xA0, 0x00, 0x00, 0x02, 0x47, 0x10, 0x01 };
-        var swApp = sm.TrySelectApplication(aid);
-        report.AppendLine($"• SELECT eMRTD app A0000002471001: {swApp:X4}");
-        if (swApp == 0x9000)
+        // 1. If the card is an ICAO eMRTD, read DG1 directly.
+        var eaid = new byte[] { 0xA0, 0x00, 0x00, 0x02, 0x47, 0x10, 0x01 };
+        if (sm.TrySelectApplication(eaid) == 0x9000 && sm.TrySelectFile(new byte[] { 0x01, 0x01 }) == 0x9000)
+            return Emrtd.BuildResultFromDg1(sm.ReadFile());
+
+        // 2. Otherwise read EF.DIR (application directory; identifiers only, no personal data).
+        var (swDir, dir) = TryReadFile(sm, new byte[] { 0x2F, 0x00 });
+        report.AppendLine($"• EF.DIR (2F00): {swDir:X4}" + (dir.Length > 0 ? $" -> {Hex(dir)}" : ""));
+
+        var aid = swDir == 0x9000 ? FindTag(FindTag(dir, 0x61) ?? dir, 0x4F) : null;
+        if (aid is null)
         {
-            var swDg1 = sm.TrySelectFile(new byte[] { 0x01, 0x01 });
-            report.AppendLine($"• SELECT EF.DG1 (0101): {swDg1:X4}");
-            if (swDg1 == 0x9000) return Emrtd.BuildResultFromDg1(sm.ReadFile());
+            report.AppendLine().Append("Secure channel works but no application AID was found in EF.DIR.");
+            return new Emrtd.Result(string.Empty, report.ToString());
         }
 
-        // Reset to the master file for the remaining probes.
-        report.AppendLine($"• SELECT MF (3F00): {sm.TrySelectFile(new byte[] { 0x3F, 0x00 }):X4}");
+        // 3. Select that application and walk its PKCS#15 object directory (ODF).
+        var swApp = sm.TrySelectApplication(aid);
+        report.AppendLine($"• SELECT app {Hex(aid)}: {swApp:X4}");
 
-        // 2. EF.DIR lists the applications on the card (identifiers only, no personal data).
-        var (swDir, dir) = TryReadFile(sm, new byte[] { 0x2F, 0x00 });
-        report.AppendLine($"• EF.DIR (2F00): {swDir:X4}" + (dir.Length > 0 ? $" -> {Convert.ToHexString(dir)}" : ""));
+        var (swOdf, odf) = TryReadFile(sm, new byte[] { 0x50, 0x31 }); // EF.ODF, reserved FID 5031
+        report.AppendLine($"• EF.ODF (5031): {swOdf:X4}" + (odf.Length > 0 ? $" -> {Hex(odf)}" : ""));
 
-        // 3. EF.COM lists which data groups are present (tags only, no personal data).
-        var (swCom, com) = TryReadFile(sm, new byte[] { 0x01, 0x1E });
-        report.AppendLine($"• EF.COM (011E): {swCom:X4}" + (com.Length > 0 ? $" -> {Convert.ToHexString(com)}" : ""));
+        var (swTi, ti) = TryReadFile(sm, new byte[] { 0x50, 0x32 }); // EF.TokenInfo, reserved FID 5032
+        report.AppendLine($"• EF.TokenInfo (5032): {swTi:X4}" + (ti.Length > 0 ? $" -> {Hex(ti)}" : ""));
 
-        // 4. EF.DG1 directly under the master file.
-        var swDg1Mf = sm.TrySelectFile(new byte[] { 0x01, 0x01 });
-        report.AppendLine($"• SELECT EF.DG1 at MF (0101): {swDg1Mf:X4}");
-        if (swDg1Mf == 0x9000) return Emrtd.BuildResultFromDg1(sm.ReadFile());
+        // 4. ODF points to the per-type directory files (certificates, data objects, keys). Read each.
+        foreach (var (label, efid) in ParseOdfDirectoryFids(odf))
+        {
+            var (sw, body) = TryReadFile(sm, efid);
+            report.AppendLine($"• {label} ({Hex(efid)}): {sw:X4}" + (body.Length > 0 ? $" -> {Hex(body)}" : ""));
+        }
 
         report.AppendLine();
-        report.Append("No ICAO DG1 found, but the secure channel works. The status words above map the card so a targeted read can be added.");
+        report.Append("PKCS#15 card. The directory files above list the object labels and paths; the next build can read the specific identity object and photo they point to.");
         return new Emrtd.Result(string.Empty, report.ToString());
+    }
+
+    private static string Hex(byte[] data)
+    {
+        // Cap very large dumps so the on-screen report stays readable.
+        const int max = 512;
+        return data.Length <= max
+            ? Convert.ToHexString(data)
+            : Convert.ToHexString(data[..max]) + $"… (+{data.Length - max} bytes)";
+    }
+
+    /// <summary>Extracts the per-type directory-file identifiers listed in a PKCS#15 ODF.</summary>
+    private static IEnumerable<(string Label, byte[] Fid)> ParseOdfDirectoryFids(byte[] odf)
+    {
+        // Each ODF record is a context tag (A0..A8) wrapping SEQUENCE { path SEQUENCE { OCTET STRING efid } }.
+        var i = 0;
+        while (i < odf.Length)
+        {
+            var tag = odf[i++];
+            if (i >= odf.Length) break;
+            var (len, hdr) = ParseLength(odf, i);
+            i += hdr;
+            if (i + len > odf.Length) break;
+            var val = odf[i..(i + len)];
+            i += len;
+
+            var seq = FindTag(val, 0x30) ?? val;
+            var octet = FindTag(seq, 0x04);
+            if (octet is { Length: >= 2 })
+                yield return (OdfLabel(tag), octet[^2..]);
+        }
+    }
+
+    private static string OdfLabel(byte tag) => tag switch
+    {
+        0xA0 => "PrKDF (private keys)",
+        0xA1 => "PuKDF (public keys)",
+        0xA2 => "SKDF (secret keys)",
+        0xA4 => "CDF (certificates)",
+        0xA5 => "CDF (trusted certificates)",
+        0xA7 => "DODF (data objects)",
+        0xA8 => "AODF (auth objects)",
+        _ => $"ODF entry {tag:X2}"
+    };
+
+    /// <summary>First value of a single-byte TLV tag at the top level of <paramref name="data"/>.</summary>
+    private static byte[]? FindTag(byte[] data, byte tag)
+    {
+        var i = 0;
+        while (i < data.Length)
+        {
+            var t = data[i++];
+            if (i >= data.Length) break;
+            var (len, hdr) = ParseLength(data, i);
+            i += hdr;
+            if (i + len > data.Length) break;
+            if (t == tag) return data[i..(i + len)];
+            i += len;
+        }
+        return null;
     }
 
     private static (int Sw, byte[] Data) TryReadFile(ISecureMessaging sm, byte[] fid)
     {
         var sw = sm.TrySelectFile(fid);
         if (sw != 0x9000) return (sw, Array.Empty<byte>());
-        try { return (sw, sm.ReadFile()); }
+        // PKCS#15 files are concatenated records, so read to end of file rather than by TLV length.
+        try { return (sw, sm.ReadEntireFile()); }
         catch (EmrtdException) { return (sw, Array.Empty<byte>()); }
     }
 

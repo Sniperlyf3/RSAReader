@@ -56,6 +56,24 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         return data.ToArray();
     }
 
+    public byte[] ReadEntireFile()
+    {
+        var data = new List<byte>();
+        var offset = 0;
+        const int cap = 0x4000;
+        while (offset < cap)
+        {
+            var want = Math.Min(0xC0, cap - offset);
+            var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0x7F), (byte)(offset & 0xFF) };
+            var (sw, part) = SendRaw(header, null, expectResponse: true, le: (byte)want);
+            if (sw != 0x9000 || part.Length == 0) break;
+            data.AddRange(part);
+            offset += part.Length;
+            if (part.Length < want) break; // reached end of file
+        }
+        return data.ToArray();
+    }
+
     private byte[] ReadBinary(int offset, int length)
     {
         var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0x7F), (byte)(offset & 0xFF) };
