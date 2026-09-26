@@ -12,5 +12,11 @@ internal interface ISecureMessaging
     int TrySelectFile(byte[] fileId);
     void SelectApplication(byte[] aid);
     void SelectFile(byte[] fileId);
+
+    /// <summary>Reads a transparent EF whose length is given by its leading TLV header.</summary>
     byte[] ReadFile();
+
+    /// <summary>Reads a transparent EF to end-of-file, for files that are not a single TLV
+    /// (e.g. PKCS#15 directory files, which are concatenated records).</summary>
+    byte[] ReadEntireFile();
 }
