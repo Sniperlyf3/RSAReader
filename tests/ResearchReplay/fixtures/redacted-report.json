@@ -1,0 +1,13 @@
+{
+  "SchemaVersion": 1,
+  "ApplicationAid": "E828BD080F0147656D20503135",
+  "Files": [
+    { "Name": "PuKDF", "Fid": "5002", "SelectStatus": 36864, "Length": 24, "Error": null },
+    { "Name": "CDF", "Fid": "5003", "SelectStatus": 36864, "Length": 0, "Error": null }
+  ],
+  "Objects": [
+    { "Directory": "5002", "Kind": "Public key", "Label": "Sample", "KeyIdHash": null, "Path": null, "Usage": null, "Access": null, "AuthReference": null }
+  ],
+  "Certificates": [],
+  "Findings": ["Synthetic fixture; no card identity data."]
+}
