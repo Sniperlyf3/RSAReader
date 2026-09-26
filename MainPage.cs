@@ -23,6 +23,11 @@ public sealed class MainPage : ContentPage
         Text = "No command sent.",
         LineBreakMode = LineBreakMode.WordWrap
     };
+    private readonly Label _discoveryOutput = new()
+    {
+        Text = "No application probes sent.",
+        LineBreakMode = LineBreakMode.WordWrap
+    };
     private readonly Entry _idInput = new()
     {
         Placeholder = "13-digit ID number",
@@ -35,7 +40,19 @@ public sealed class MainPage : ContentPage
 #if ANDROID
     private NfcAdapter? _adapter;
     private readonly NfcAdapter.IReaderCallback _reader;
+    private readonly object _cardLock = new();
     private IsoDep? _isoDep;
+    private bool _apduBusy;
+
+    // These are documented, common application identifiers, not a claimed SA Smart ID profile.
+    // P2=0C requests no file-control information; response payloads are never displayed here.
+    private static readonly (string Name, byte[] Command)[] DiscoveryProbes =
+    [
+        ("ICAO travel document", Convert.FromHexString("00A4040C07A0000002471001")),
+        ("NFC Forum Type 4 NDEF", Convert.FromHexString("00A4040C07D2760000850101")),
+        ("PKCS#15", Convert.FromHexString("00A4040C0CA000000063504B43532D3135")),
+        ("GlobalPlatform card manager", Convert.FromHexString("00A4040C08A000000003000000"))
+    ];
 #endif
 
     public MainPage()
@@ -47,6 +64,8 @@ public sealed class MainPage : ContentPage
 
         var sendApdu = new Button { Text = "Send allowed APDU" };
         sendApdu.Clicked += async (_, _) => await SendApduAsync(sendApdu);
+        var probeApplications = new Button { Text = "Probe common applications" };
+        probeApplications.Clicked += async (_, _) => await ProbeApplicationsAsync(probeApplications);
         var decode = new Button { Text = "Decode entered ID number" };
         decode.Clicked += (_, _) => _decoded.Text = IdDecoder.Decode(_idInput.Text ?? "");
         var clear = new Button { Text = "Clear displayed information" };
@@ -56,10 +75,11 @@ public sealed class MainPage : ContentPage
             _decoded.Text = "Nothing decoded yet.";
             _apduInput.Text = "";
             _apduOutput.Text = "No command sent.";
+            _discoveryOutput.Text = "No application probes sent.";
             _scan.Text = "Hold a Smart ID against the phone. The app does not save card data.";
             _status.Text = "Ready to scan";
 #if ANDROID
-            _isoDep = null;
+            ResetCardSession();
 #endif
         };
 
@@ -83,6 +103,13 @@ public sealed class MainPage : ContentPage
                     _apduInput,
                     sendApdu,
                     _apduOutput,
+                    new Label
+                    {
+                        Text = "Discovery sends four documented SELECT commands when tapped. It shows status words and response lengths only; it does not display or save response data.",
+                        LineBreakMode = LineBreakMode.WordWrap
+                    },
+                    probeApplications,
+                    _discoveryOutput,
                     new Label { Text = "Manual fallback: SA ID number", FontSize = 20, FontAttributes = FontAttributes.Bold },
                     new Label
                     {
@@ -143,7 +170,7 @@ public sealed class MainPage : ContentPage
             try { _adapter.DisableReaderMode(activity); }
             catch (Exception) { /* The activity may already be stopping. */ }
         }
-        _isoDep = null;
+        ResetCardSession();
 #endif
         base.OnDisappearing();
     }
@@ -151,6 +178,7 @@ public sealed class MainPage : ContentPage
     private async Task SendApduAsync(Button sendButton)
     {
 #if ANDROID
+        if (_apduBusy) return;
         if (_isoDep is null)
         {
             _apduOutput.Text = "Scan an ISO-DEP card first.";
@@ -162,12 +190,12 @@ public sealed class MainPage : ContentPage
             return;
         }
 
-        var card = _isoDep;
+        _apduBusy = true;
         sendButton.IsEnabled = false;
         _apduOutput.Text = "Waiting for card…";
         try
         {
-            var response = await Task.Run(() => Transceive(card, command));
+            var response = await Task.Run(() => Transceive(command));
             if (response.Length < 2)
             {
                 _apduOutput.Text = $"Malformed response ({response.Length} bytes): {Convert.ToHexString(response)}";
@@ -189,6 +217,7 @@ public sealed class MainPage : ContentPage
         }
         finally
         {
+            _apduBusy = false;
             sendButton.IsEnabled = true;
         }
 #else
@@ -196,21 +225,90 @@ public sealed class MainPage : ContentPage
 #endif
     }
 
-#if ANDROID
-    private static byte[] Transceive(IsoDep isoDep, byte[] command)
+    private async Task ProbeApplicationsAsync(Button probeButton)
     {
-        isoDep.Timeout = 5000;
+#if ANDROID
+        if (_apduBusy) return;
+        if (_isoDep is null)
+        {
+            _discoveryOutput.Text = "Scan an ISO-DEP card first.";
+            return;
+        }
+
+        _apduBusy = true;
+        probeButton.IsEnabled = false;
+        _discoveryOutput.Text = "Probing applications… Keep the card against the phone.";
         try
         {
-            isoDep.Connect();
-            if (!isoDep.IsConnected) throw new IOException("Could not connect to the card.");
-            if (command.Length > isoDep.MaxTransceiveLength)
-                throw new ArgumentException($"Command exceeds the card limit of {isoDep.MaxTransceiveLength} bytes.");
-            return isoDep.Transceive(command) ?? throw new IOException("Card returned no response.");
+            var results = await Task.Run(() =>
+            {
+                var lines = new StringBuilder();
+                foreach (var (name, command) in DiscoveryProbes)
+                {
+                    try
+                    {
+                        var response = Transceive(command);
+                        if (response.Length < 2)
+                        {
+                            lines.AppendLine($"{name}: malformed response ({response.Length} bytes)");
+                            continue;
+                        }
+                        var sw1 = response[^2];
+                        var sw2 = response[^1];
+                        lines.AppendLine($"{name}: {sw1:X2}{sw2:X2} ({DescribeStatusWord(sw1, sw2)}); {response.Length - 2} data bytes hidden");
+                    }
+                    catch (Exception ex)
+                    {
+                        lines.AppendLine($"{name}: {ex.GetType().Name}: {ex.Message}");
+                        break;
+                    }
+                }
+                return lines.ToString();
+            });
+            _discoveryOutput.Text = results;
         }
         finally
         {
-            if (isoDep.IsConnected) isoDep.Close();
+            _apduBusy = false;
+            probeButton.IsEnabled = true;
+        }
+#else
+        _discoveryOutput.Text = "NFC/APDU communication is available on Android only.";
+#endif
+    }
+
+#if ANDROID
+    private byte[] Transceive(byte[] command)
+    {
+        lock (_cardLock)
+        {
+            var isoDep = _isoDep ?? throw new IOException("Scan an ISO-DEP card first.");
+            try
+            {
+                isoDep.Timeout = 5000;
+                if (!isoDep.IsConnected) isoDep.Connect();
+                if (!isoDep.IsConnected) throw new IOException("Could not connect to the card.");
+                if (command.Length > isoDep.MaxTransceiveLength)
+                    throw new ArgumentException($"Command exceeds the phone limit of {isoDep.MaxTransceiveLength} bytes.");
+                return isoDep.Transceive(command) ?? throw new IOException("Card returned no response.");
+            }
+            catch
+            {
+                try { isoDep.Close(); } catch { /* The tag may already be gone. */ }
+                throw;
+            }
+        }
+    }
+
+    private void ResetCardSession()
+    {
+        lock (_cardLock)
+        {
+            if (_isoDep is not null)
+            {
+                try { _isoDep.Close(); } catch { /* The tag may already be gone. */ }
+                _isoDep = null;
+            }
         }
     }
 
@@ -257,6 +355,7 @@ public sealed class MainPage : ContentPage
         (0x61, _) => $"more response bytes available ({sw2:X2} indicated)",
         (0x6A, 0x82) => "file or application not found",
         (0x69, 0x82) => "security status not satisfied",
+        (0x69, 0x99) => "applet selection failed on Java Card; card-specific otherwise",
         (0x6D, 0x00) => "instruction not supported",
         (0x6E, 0x00) => "class not supported",
         _ => "card-specific or ISO 7816 status"
@@ -289,7 +388,8 @@ public sealed class MainPage : ContentPage
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
-                _page._isoDep = isoDep;
+                _page.ResetCardSession();
+                lock (_page._cardLock) _page._isoDep = isoDep;
                 _page._status.Text = "Card detected. APDUs are not sent automatically.";
                 _page._scan.Text = details.ToString();
             });

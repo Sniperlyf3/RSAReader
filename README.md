@@ -37,6 +37,8 @@ The key must be created only once. If it is replaced or lost, Android will rejec
 - Scans NFC-A and NFC-B tags while the app is open.
 - Lists Android-reported tag technologies, ISO-DEP support, max transceive size, and the available ISO-DEP historical or higher-layer bytes.
 - Provides a manual short-APDU probe. It sends no command automatically and accepts only `SELECT` (`A4`), `READ BINARY` (`B0`, `B1`), `GET DATA` (`CA`), `GET CHALLENGE` (`84`), and `GET RESPONSE` (`C0`) instruction bytes. Commands are not written to storage. `SELECT` and `GET CHALLENGE` can change transient card/session state.
+- Keeps the ISO-DEP connection open between taps while the same card remains in the field. This preserves selection state for a follow-up manual command; scanning another card or leaving the page resets it.
+- Offers a tap-to-run probe of four known application identifiers (ICAO travel document, NFC Forum Type 4 NDEF, PKCS#15, and a common GlobalPlatform card-manager AID). The probe shows status words and response lengths, never payload bytes. These identifiers are candidates, not a claimed South African ID card profile.
 - Displays APDU response bytes and status words on screen. Responses can contain personal information, so do not share screenshots or logs without checking them first.
 - Validates the Luhn checksum of a manually entered 13-digit South African ID number and displays the limited fields encoded in the number. This is not an identity check.
 
@@ -45,6 +47,8 @@ NFC is optional for installation; the ID-number decoder remains available on dev
 ## Protocol research status
 
 The public South African Government description says the Smart ID chip contains biographic data and fingerprint biometrics, but does not specify the card application identifier, file identifiers, access-control procedure, or data encoding ([Smart ID card overview](https://www.gov.za/about-government/smart-identity-document-id-card-roll-out)). ISO-DEP only establishes the transport used to exchange APDUs. ICAO Doc 9303 defines an LDS for electronic machine-readable travel documents; that does not establish that the South African ID card uses that LDS ([ICAO Doc 9303](https://www.icao.int/publications/doc-series/doc-9303)).
+
+One observed card returned `6999` with no data for both `SELECT` of master-file ID `3F00` and `SELECT` of the ICAO LDS AID. Oracle's Java Card API names `6999` “applet selection failed”, but that does not establish the card's operating system or why selection failed ([Oracle status-word reference](https://docs.oracle.com/en/java/javacard/3.1/jc_api_srvc/api_classic/javacard/framework/ISO7816.html)). A [Government Printing Works annual report](https://nationalgovernment.co.za/entity_annual/153/2014-government-printing-works-annual-report.pdf) names Gemalto as the original supplier of the blank contactless cards. We have not found a public SA Smart ID AID, file map, or access policy. The probe narrows the possibilities without claiming that a rejected AID implies inaccessible data.
 
 The next useful evidence is anonymized captures from a card the researcher owns or is authorized to inspect: tag technologies and ATS/ATTRIB bytes, each command APDU, response status words, and redacted response payloads. Do not publish identity numbers, names, photographs, biometrics, access keys, or unredacted card dumps. No authentication bypass or write command is implemented.
 
