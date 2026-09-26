@@ -62,10 +62,11 @@ internal sealed class SecureMessaging : ISecureMessaging
             var want = Math.Min(0xDF, cap - offset);
             var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0x7F), (byte)(offset & 0xFF) };
             var (sw, part) = SendRaw(header, null, expectResponse: true, le: (byte)want);
-            if (sw != 0x9000 || part.Length == 0) break;
+            if (sw != 0x9000 && sw != 0x6282) break;
+            if (part.Length == 0) break;
             data.AddRange(part);
             offset += part.Length;
-            if (part.Length < want) break; // reached end of file
+            if (sw == 0x6282 || part.Length < want) break; // reached end of file
         }
         return data.ToArray();
     }
@@ -74,7 +75,7 @@ internal sealed class SecureMessaging : ISecureMessaging
     {
         var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0xFF), (byte)(offset & 0xFF) };
         var (sw, plain) = SendRaw(header, commandData: null, expectResponse: true, le: (byte)length);
-        if (sw != 0x9000)
+        if (sw != 0x9000 && sw != 0x6282)
         {
             if (offset == 0) throw new EmrtdException($"READ BINARY failed (status {sw:X4}).");
             return Array.Empty<byte>();
@@ -125,8 +126,9 @@ internal sealed class SecureMessaging : ISecureMessaging
         // Advance the counter for the response too, so it stays aligned even after a
         // non-9000 status.
         _ssc = Increment(_ssc);
-        if (sw != 0x9000) return (sw, Array.Empty<byte>());
-        return (sw, VerifyAndExtract(resp[..^2]));
+        // 0x9000 = OK; 0x6282 = end of file reached before Le bytes, but data is still returned.
+        if (sw == 0x9000 || sw == 0x6282) return (sw, VerifyAndExtract(resp[..^2]));
+        return (sw, Array.Empty<byte>());
     }
 
     private byte[] VerifyAndExtract(byte[] respBody)
