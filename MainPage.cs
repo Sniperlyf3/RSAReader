@@ -61,6 +61,14 @@ public sealed class MainPage : ContentPage
         MaxLength = 16
     };
     private readonly Label _paceOutput = new() { Text = "No chip read attempted.", LineBreakMode = LineBreakMode.WordWrap };
+    private readonly Editor _paceLog = new()
+    {
+        IsReadOnly = true,
+        FontSize = 11,
+        FontFamily = "monospace",
+        HeightRequest = 240,
+        Placeholder = "Raw APDU log (TX/RX hex) appears here after a read."
+    };
 
 #if ANDROID
     private NfcAdapter? _adapter;
@@ -95,6 +103,13 @@ public sealed class MainPage : ContentPage
         readChip.Clicked += async (_, _) => await ReadChipAsync(readChip);
         var readChipPace = new Button { Text = "Read chip data (PACE / CAN)" };
         readChipPace.Clicked += async (_, _) => await ReadChipPaceAsync(readChipPace);
+        var copyLog = new Button { Text = "Copy log" };
+        copyLog.Clicked += async (_, _) =>
+        {
+            var text = string.IsNullOrEmpty(_paceLog.Text) ? _paceOutput.Text : $"{_paceOutput.Text}\n\n{_paceLog.Text}";
+            await Clipboard.Default.SetTextAsync(text);
+            copyLog.Text = "Copied";
+        };
         var decode = new Button { Text = "Decode entered ID number" };
         decode.Clicked += (_, _) => _decoded.Text = IdDecoder.Decode(_idInput.Text ?? "");
         var clear = new Button { Text = "Clear displayed information" };
@@ -111,6 +126,7 @@ public sealed class MainPage : ContentPage
             _bacOutput.Text = "No chip read attempted.";
             _canInput.Text = "";
             _paceOutput.Text = "No chip read attempted.";
+            _paceLog.Text = "";
             _scan.Text = "Hold a Smart ID against the phone. The app does not save card data.";
             _status.Text = "Ready to scan";
 #if ANDROID
@@ -165,6 +181,13 @@ public sealed class MainPage : ContentPage
                     _canInput,
                     readChipPace,
                     _paceOutput,
+                    new Label
+                    {
+                        Text = "Raw APDU log. Secure-messaging commands are encrypted on the wire, so this log contains no personal data and is safe to share.",
+                        LineBreakMode = LineBreakMode.WordWrap
+                    },
+                    _paceLog,
+                    copyLog,
                     new Label { Text = "Manual fallback: SA ID number", FontSize = 20, FontAttributes = FontAttributes.Bold },
                     new Label
                     {
@@ -331,13 +354,33 @@ public sealed class MainPage : ContentPage
         }
 
         var can = _canInput.Text ?? "";
+        var log = new StringBuilder();
+        // Wrap the transceiver so every command/response pair is captured as hex.
+        Func<byte[], byte[]> logged = command =>
+        {
+            byte[] response;
+            try
+            {
+                response = Transceive(command);
+            }
+            catch (Exception ex)
+            {
+                log.AppendLine($"TX {Convert.ToHexString(command)}");
+                log.AppendLine($"RX <error: {ex.GetType().Name}: {ex.Message}>");
+                throw;
+            }
+            log.AppendLine($"TX {Convert.ToHexString(command)}");
+            log.AppendLine($"RX {Convert.ToHexString(response)}");
+            return response;
+        };
 
         _apduBusy = true;
         readButton.IsEnabled = false;
         _paceOutput.Text = "Authenticating with the chip (PACE)… Keep the card against the phone.";
+        _paceLog.Text = "";
         try
         {
-            var result = await Task.Run(() => new Pace(Transceive).ReadDg1WithCan(can));
+            var result = await Task.Run(() => new Pace(logged).ReadDg1WithCan(can));
             _paceOutput.Text = result.Summary;
         }
         catch (EmrtdException ex)
@@ -350,6 +393,7 @@ public sealed class MainPage : ContentPage
         }
         finally
         {
+            _paceLog.Text = log.ToString();
             _apduBusy = false;
             readButton.IsEnabled = true;
         }
