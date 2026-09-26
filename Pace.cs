@@ -262,7 +262,7 @@ public sealed class Pace
                     report.AppendLine($"• {label} ({Hex(fid)}): SELECT {sw:X4}");
                     continue;
                 }
-                var body = sm.ReadEntireFile();
+                var body = sm.ReadOpaqueFile();
                 _collector?.Observe("Data object value", fid, sw, body);
                 report.AppendLine($"• {label} ({Hex(fid)}): {body.Length} bytes -> {Hex(body)}");
             }
@@ -447,7 +447,14 @@ public sealed class Pace
         var sw = sm.TrySelectFile(fid);
         if (sw != 0x9000) return (sw, Array.Empty<byte>());
         // PKCS#15 files are concatenated records, so read to end of file rather than by TLV length.
-        try { return (sw, sm.ReadEntireFile()); }
+        try
+        {
+            var data = sm.ReadEntireFile();
+            // A file shorter than the four-byte TLV header is otherwise reported
+            // as empty. Probe PrKDF with exact smaller Le values before concluding.
+            if (data.Length == 0 && fid is [0x50, 0x01]) data = sm.ReadOpaqueFile();
+            return (sw, data);
+        }
         catch (EmrtdException) { return (0xFFFF, Array.Empty<byte>()); } // sentinel: SELECT succeeded; READ failed
     }
 

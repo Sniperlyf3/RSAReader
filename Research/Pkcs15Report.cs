@@ -94,13 +94,19 @@ public sealed class Pkcs15Collector
         if (!_raw.TryGetValue(fid, out var data)) return;
         try
         {
-            foreach (var record in Asn1Tree.Read(data))
+            foreach (var outer in Asn1Tree.Read(data))
             {
-                if (record.Tag != 0x30) continue;
+                // EC key types are context-tagged CHOICE arms (A0); RSA is an
+                // untagged SEQUENCE. Both contain the same PKCS15Object shell.
+                var record = outer.Tag == 0x30 ? outer : outer.Tag == 0xA0 ? outer.Child(0x30) : null;
+                if (record is null) continue;
+                var objectKind = kind.Contains("key", StringComparison.OrdinalIgnoreCase)
+                    ? kind + (outer.Tag == 0xA0 ? " (EC)" : " (RSA)") : kind;
                 var common = record.Children.FirstOrDefault();
                 var classAttrs = record.Children.Skip(1).FirstOrDefault();
                 var label = common?.Child(0x0C) is { } labelNode ? SafeLabel(Encoding.UTF8.GetString(labelNode.Value)) : null;
-                var keyId = classAttrs?.Child(0x04)?.Value;
+                var keyId = kind is "Private key" or "Public key" or "Certificate"
+                    ? classAttrs?.Child(0x04)?.Value : null;
                 var idHash = keyId is { Length: > 0 } ? Hash(keyId) : null;
                 // ObjectValue.indirect is a Path SEQUENCE in the type attributes.
                 // A path OCTET STRING is constrained to 2/4/6 bytes and begins in
@@ -115,7 +121,7 @@ public sealed class Pkcs15Collector
                 var access = kind == "Private key" && bits.Count > 1
                     ? BitNames(bits[1], ["sensitive", "extractable", "alwaysSensitive", "neverExtractable", "local"])
                     : null;
-                Report.Objects.Add(new ObjectObservation(fid, kind, label, idHash,
+                Report.Objects.Add(new ObjectObservation(fid, objectKind, label, idHash,
                     path is null ? null : Convert.ToHexString(path), usage, access, null));
             }
         }
@@ -168,8 +174,11 @@ public sealed class Pkcs15Collector
     {
         try
         {
-            var oids = Asn1Tree.Read(raw).SelectMany(x => x.Descendants(0x06))
-                .Select(x => Asn1Tree.Oid(x.Value)).ToList();
+            // CertificatePolicies ::= SEQUENCE OF PolicyInformation, whose first
+            // child is the policy OID. Qualifier OIDs must not be called policies.
+            var policies = Asn1Tree.Read(raw).FirstOrDefault(x => x.Tag == 0x30);
+            var oids = policies?.Children.Select(x => x.Child(0x06))
+                .Where(x => x is not null).Select(x => Asn1Tree.Oid(x!.Value)).ToList() ?? [];
             return oids.Count == 0 ? "present; no policy OIDs" : string.Join(", ", oids);
         }
         catch (FormatException) { return "present; parse failed"; }

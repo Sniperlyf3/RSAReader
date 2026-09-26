@@ -19,4 +19,7 @@ internal interface ISecureMessaging
     /// <summary>Reads a transparent EF to end-of-file, for files that are not a single TLV
     /// (e.g. PKCS#15 directory files, which are concatenated records).</summary>
     byte[] ReadEntireFile();
+
+    /// <summary>Reads a transparent EF that may contain opaque non-TLV bytes.</summary>
+    byte[] ReadOpaqueFile();
 }
