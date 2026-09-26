@@ -4,3 +4,7 @@ obj/
 *.user
 *.suo
 artifacts/
+*.keystore
+*.jks
+*.p12
+*.pem

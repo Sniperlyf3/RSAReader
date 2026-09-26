@@ -2,16 +2,35 @@
 
 An Android .NET MAUI reference app for inspecting the NFC interface of South African Smart ID cards. The card application and file layout are not documented publicly enough to assume an eMRTD layout, so this project records the observable ISO-DEP/APDU behavior without pretending the card format is known.
 
-## Build
+## Build and install
 
 Install the .NET 9 SDK, MAUI Android workload (`dotnet workload install maui-android`), and Android SDK. Then run:
 
 ```sh
-dotnet restore RSAReader.csproj
-dotnet build RSAReader.csproj -f net9.0-android
+dotnet restore RSAReader.csproj -r android-arm64
+dotnet publish RSAReader.csproj -f net9.0-android -c Release -r android-arm64
 ```
 
-GitHub Actions builds a Debug APK on pushes and pull requests and uploads it as the `RSAReader-apk` workflow artifact.
+The release build targets ARM64 phones. Full trimming and R8 shrink the managed and Java code; AOT is disabled to keep the APK small. The signed release APK is about 9.3 MB. Pull requests validate the release build without uploading an APK. Pushes to `main` and manual workflow runs upload only the verified signed `RSAReader-arm64.apk` as the `RSAReader-arm64-signed` artifact.
+
+### Signing for in-place updates
+
+Android requires the package name and signing certificate to stay the same, and the new APK's version code must be higher. The CI workflow uses a dedicated keystore and assigns a version code of `10000 + GITHUB_RUN_NUMBER`. The keystore and its password belong in the repository's **Actions secrets**, not an Actions cache: caches are readable by pull requests and can expire.
+
+Generate one signing key with alias `rsareader` (the command prompts for its password), back up both the keystore and its password, then store them as the repository secrets `RSA_READER_KEYSTORE_B64` and `RSA_READER_SIGNING_PASSWORD`:
+
+```sh
+keytool -genkeypair -storetype PKCS12 -keystore rsareader.p12 \
+  -alias rsareader -keyalg RSA -keysize 3072 -validity 36500
+```
+
+Use the same password for the keystore and key. Put that password in a private text file. With an authenticated GitHub CLI, the helper uploads both secrets without printing either value:
+
+```sh
+./scripts/upload-signing-secrets.sh /path/to/rsareader.p12 /path/to/password.txt
+```
+
+The key must be created only once. If it is replaced or lost, Android will reject updates signed with the new key. The earlier CI Debug APKs were signed with temporary runner keys, so moving from one of those APKs to this release key requires one uninstall. Subsequent releases signed with this key install as updates.
 
 ## What it does
 
@@ -31,4 +50,4 @@ The next useful evidence is anonymized captures from a card the researcher owns 
 
 ## Launch troubleshooting
 
-The Debug APK uploaded by the original CI workflow crashed on launch when installed by itself. On an Android 35 emulator, logcat reported `No assemblies found ... Assuming this is part of Fast Deployment`. The project sets `EmbedAssembliesIntoApk=true` so the uploaded Debug APK contains its managed code and can be installed directly. If a future build still exits, capture the first fatal exception from `adb logcat` (`adb logcat -c`, launch RSAReader, then `adb logcat -d -b crash`), along with the Android version.
+The Debug APK uploaded by the original CI workflow crashed on launch when installed by itself. On an Android 35 emulator, logcat reported `No assemblies found ... Assuming this is part of Fast Deployment`. The project sets `EmbedAssembliesIntoApk=true`, and CI now distributes a self-contained Release APK. If a future build still exits, capture the first fatal exception from `adb logcat` (`adb logcat -c`, launch RSAReader, then `adb logcat -d -b crash`), along with the Android version.
