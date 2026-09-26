@@ -24,7 +24,12 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="9.0.0" />
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
     <MauiIcon Include="Resources\AppIcon\appicon.svg" />
     <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#102A43" BaseSize="128,128" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Full trimming must not strip the crypto types PACE resolves through BouncyCastle. -->
+    <TrimmerRootAssembly Include="BouncyCastle.Cryptography" RootMode="all" />
   </ItemGroup>
 </Project>

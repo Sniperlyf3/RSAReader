@@ -94,8 +94,28 @@ public sealed class Emrtd
         sm.SelectFile(new byte[] { 0x01, 0x01 });
         var dg1 = sm.ReadFile();
 
+        return BuildResultFromDg1(dg1);
+    }
+
+    /// <summary>Parses a DG1 data group into an MRZ string and a display summary.</summary>
+    internal static Result BuildResultFromDg1(byte[] dg1)
+    {
         var mrz = ParseDg1Mrz(dg1);
         return new Result(mrz, SummariseMrz(mrz));
+    }
+
+    /// <summary>Total on-card length of a data group from its leading tag+length bytes.</summary>
+    internal static int TlvTotalLength(byte[] head)
+    {
+        var p = 1;
+        if ((head[0] & 0x1F) == 0x1F) p = 2; // multi-byte tag
+        var b = head[p];
+        int len, lenBytes;
+        if (b < 0x80) { len = b; lenBytes = 1; }
+        else if (b == 0x81) { len = head[p + 1]; lenBytes = 2; }
+        else if (b == 0x82) { len = (head[p + 1] << 8) | head[p + 2]; lenBytes = 3; }
+        else throw new EmrtdException("Unsupported data-group length encoding.");
+        return p + lenBytes + len;
     }
 
     // ----- APDU helpers -------------------------------------------------------
