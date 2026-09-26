@@ -83,7 +83,10 @@ public sealed class Pkcs15Collector
             if (_raw.TryGetValue(file.Fid, out var der)) InspectCertificate(file.Fid, der);
         var privateFile = Report.Files.FirstOrDefault(x => x.Fid == "5001");
         if (privateFile?.SelectStatus == 0xFFFF) Report.Findings.Add("PrKDF was selected, but reading failed. Its contents and capabilities remain unknown.");
-        if (privateFile is { Length: 0 }) Report.Findings.Add("PrKDF returned no bytes. A read error or access rule may explain this; private-key absence is unproven.");
+        if (privateFile is { Length: 0 })
+            Report.Findings.Add(Report.Findings.Any(x => x.Contains("PrKDF one-byte READ BINARY returned 6982", StringComparison.Ordinal))
+                ? "PrKDF READ BINARY reported security condition not satisfied in this PACE/CAN session. Its contents and private-key capabilities remain unknown."
+                : "PrKDF returned no bytes. A read error or access rule may explain this; private-key absence is unproven.");
         if (Report.Certificates.Count > 0) Report.Findings.Add("A certificate on the chip does not establish issuer trust without an authenticated CA chain and revocation evidence.");
         foreach (var key in Report.Objects.Where(x => x.Directory == "5002" && x.KeyIdHash is not null))
         {
@@ -104,9 +107,17 @@ public sealed class Pkcs15Collector
                 // PKCS#15 uses an IMPLICIT [0] CHOICE arm for EC keys. Its A0
                 // value contains the PKCS15Object fields directly (common,
                 // class, type), with no extra SEQUENCE around them.
-                var record = outer.Tag is 0x30 or 0xA0 ? outer : null;
+                var record = outer.Tag is 0x30 or 0xA0 ||
+                    (kind == "Authentication object" && (outer.Tag == 0xA1 || outer.Tag == 0xA2)) ? outer : null;
                 if (record is null) continue;
-                var objectKind = kind.Contains("key", StringComparison.OrdinalIgnoreCase)
+                var objectKind = kind == "Authentication object" ? outer.Tag switch
+                {
+                    0x30 => "PIN authentication object",
+                    0xA0 => "Biometric template authentication object",
+                    0xA1 => "Authentication key object",
+                    0xA2 => "External authentication object",
+                    _ => "Authentication object"
+                } : kind.Contains("key", StringComparison.OrdinalIgnoreCase)
                     ? kind + (outer.Tag == 0xA0 ? " (EC)" : " (RSA)") : kind;
                 var common = record.Children.FirstOrDefault();
                 var classAttrs = record.Children.Skip(1).FirstOrDefault();
