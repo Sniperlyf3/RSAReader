@@ -12,6 +12,7 @@ using Org.BouncyCastle.Math;
 using Org.BouncyCastle.Math.EC;
 using Org.BouncyCastle.Security;
 using BcBigInteger = Org.BouncyCastle.Math.BigInteger;
+using BcEcPoint = Org.BouncyCastle.Math.EC.ECPoint;
 
 namespace RSAReader;
 
@@ -281,7 +282,7 @@ public sealed class Pace
         return output[..n];
     }
 
-    private static (BcBigInteger D, ECPoint Q) GenerateKeyPair(ECDomainParameters dp, SecureRandom rng)
+    private static (BcBigInteger D, BcEcPoint Q) GenerateKeyPair(ECDomainParameters dp, SecureRandom rng)
     {
         var gen = new ECKeyPairGenerator();
         gen.Init(new ECKeyGenerationParameters(dp, rng));
@@ -291,7 +292,7 @@ public sealed class Pace
 
     // ----- TLV helpers --------------------------------------------------------
 
-    private static byte[] EncodePublicKey(DerObjectIdentifier oid, ECPoint point)
+    private static byte[] EncodePublicKey(DerObjectIdentifier oid, BcEcPoint point)
     {
         // TR-03110 public-key data object for the authentication token: 7F49 { 06 OID, 86 point }.
         var body = Emrtd.Concat(
