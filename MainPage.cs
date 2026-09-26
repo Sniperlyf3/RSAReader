@@ -54,6 +54,13 @@ public sealed class MainPage : ContentPage
         MaxLength = 6
     };
     private readonly Label _bacOutput = new() { Text = "No chip read attempted.", LineBreakMode = LineBreakMode.WordWrap };
+    private readonly Entry _canInput = new()
+    {
+        Placeholder = "Card Access Number (CAN)",
+        Keyboard = Keyboard.Numeric,
+        MaxLength = 16
+    };
+    private readonly Label _paceOutput = new() { Text = "No chip read attempted.", LineBreakMode = LineBreakMode.WordWrap };
 
 #if ANDROID
     private NfcAdapter? _adapter;
@@ -86,6 +93,8 @@ public sealed class MainPage : ContentPage
         probeApplications.Clicked += async (_, _) => await ProbeApplicationsAsync(probeApplications);
         var readChip = new Button { Text = "Read chip data (BAC)" };
         readChip.Clicked += async (_, _) => await ReadChipAsync(readChip);
+        var readChipPace = new Button { Text = "Read chip data (PACE / CAN)" };
+        readChipPace.Clicked += async (_, _) => await ReadChipPaceAsync(readChipPace);
         var decode = new Button { Text = "Decode entered ID number" };
         decode.Clicked += (_, _) => _decoded.Text = IdDecoder.Decode(_idInput.Text ?? "");
         var clear = new Button { Text = "Clear displayed information" };
@@ -100,6 +109,8 @@ public sealed class MainPage : ContentPage
             _bacDobInput.Text = "";
             _bacExpInput.Text = "";
             _bacOutput.Text = "No chip read attempted.";
+            _canInput.Text = "";
+            _paceOutput.Text = "No chip read attempted.";
             _scan.Text = "Hold a Smart ID against the phone. The app does not save card data.";
             _status.Text = "Ready to scan";
 #if ANDROID
@@ -145,6 +156,15 @@ public sealed class MainPage : ContentPage
                     _bacExpInput,
                     readChip,
                     _bacOutput,
+                    new Label { Text = "Read chip data (PACE / CAN)", FontSize = 20, FontAttributes = FontAttributes.Bold },
+                    new Label
+                    {
+                        Text = "If a reader app unlocked your card with a Card Access Number, use this. Enter the CAN printed on your own card, hold the card to the phone, and tap the button. The CAN establishes an authenticated PACE session; it is not an authentication bypass. Data read from the chip is shown on screen only and is not saved.",
+                        LineBreakMode = LineBreakMode.WordWrap
+                    },
+                    _canInput,
+                    readChipPace,
+                    _paceOutput,
                     new Label { Text = "Manual fallback: SA ID number", FontSize = 20, FontAttributes = FontAttributes.Bold },
                     new Label
                     {
@@ -297,6 +317,44 @@ public sealed class MainPage : ContentPage
         }
 #else
         _bacOutput.Text = "Chip reading is available on Android only.";
+#endif
+    }
+
+    private async Task ReadChipPaceAsync(Button readButton)
+    {
+#if ANDROID
+        if (_apduBusy) return;
+        if (_isoDep is null)
+        {
+            _paceOutput.Text = "Scan an ISO-DEP card first.";
+            return;
+        }
+
+        var can = _canInput.Text ?? "";
+
+        _apduBusy = true;
+        readButton.IsEnabled = false;
+        _paceOutput.Text = "Authenticating with the chip (PACE)… Keep the card against the phone.";
+        try
+        {
+            var result = await Task.Run(() => new Pace(Transceive).ReadDg1WithCan(can));
+            _paceOutput.Text = result.Summary;
+        }
+        catch (EmrtdException ex)
+        {
+            _paceOutput.Text = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            _paceOutput.Text = $"Chip read failed: {ex.GetType().Name}: {ex.Message}";
+        }
+        finally
+        {
+            _apduBusy = false;
+            readButton.IsEnabled = true;
+        }
+#else
+        _paceOutput.Text = "Chip reading is available on Android only.";
 #endif
     }
 

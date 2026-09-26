@@ -21,6 +21,9 @@ internal sealed class SecureMessaging
         _ssc = ssc;
     }
 
+    /// <summary>SELECT an application by AID (P1=04, P2=0C).</summary>
+    public void SelectApplication(byte[] aid) => Send(new byte[] { 0x0C, 0xA4, 0x04, 0x0C }, aid, expectResponse: false);
+
     /// <summary>SELECT EF by file identifier (P1=02, P2=0C).</summary>
     public void SelectFile(byte[] fileId)
     {
