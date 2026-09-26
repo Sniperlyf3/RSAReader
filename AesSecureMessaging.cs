@@ -60,6 +60,8 @@ internal sealed class AesSecureMessaging : ISecureMessaging
 
     public byte[] ReadOpaqueFile() => Research.OpaqueFileRead.WholeFile(ReadChunk);
 
+    public int ProbeReadByteStatus() => SendRaw([0x0C, 0xB0, 0x00, 0x00], null, true, 0x01).Sw;
+
     private byte[] ReadChunk(int offset, int length)
     {
         var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0x7F), (byte)(offset & 0xFF) };
