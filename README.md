@@ -40,7 +40,10 @@ The key must be created only once. If it is replaced or lost, Android will rejec
 - Keeps the ISO-DEP connection open between taps while the same card remains in the field. This preserves selection state for a follow-up manual command; scanning another card or leaving the page resets it.
 - Offers a tap-to-run probe of four known application identifiers (ICAO travel document, NFC Forum Type 4 NDEF, PKCS#15, and a common GlobalPlatform card-manager AID). The probe shows status words and response lengths, never payload bytes. These identifiers are candidates, not a claimed South African ID card profile.
 - Displays APDU response bytes and status words on screen. Responses can contain personal information, so do not share screenshots or logs without checking them first.
+- Reads the machine-readable-zone data group (DG1) using ICAO 9303 Basic Access Control (BAC). The cardholder enters the document/ID number, date of birth, and expiry date printed on their own card; those values derive the access key, so the chip only unlocks for someone physically holding the card. This is authenticated access, not an authentication bypass. Data read from the chip is shown on screen only and is not saved.
 - Validates the Luhn checksum of a manually entered 13-digit South African ID number and displays the limited fields encoded in the number. This is not an identity check.
+
+The BAC implementation (`Emrtd.cs`, `SecureMessaging.cs`) was verified against the ICAO Doc 9303 Part 11 Appendix D worked example: key derivation, mutual authentication, session-key agreement, and the secure-messaging SELECT/READ BINARY commands all reproduce the specification's test vectors. BAC works only on chips that support it; a card that offers PACE only, or does not use the ICAO LDS at all, will not unlock this way.
 
 NFC is optional for installation; the ID-number decoder remains available on devices without NFC.
 
