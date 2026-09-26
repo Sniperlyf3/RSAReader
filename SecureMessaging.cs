@@ -6,7 +6,7 @@ namespace RSAReader;
 /// decrypts the returned data. Handles the SELECT-EF and READ-BINARY commands needed
 /// to retrieve a data group.
 /// </summary>
-internal sealed class SecureMessaging
+internal sealed class SecureMessaging : ISecureMessaging
 {
     private readonly Func<byte[], byte[]> _transceive;
     private readonly byte[] _ksEnc;
@@ -21,17 +21,15 @@ internal sealed class SecureMessaging
         _ssc = ssc;
     }
 
-    /// <summary>SELECT an application by AID (P1=04, P2=0C).</summary>
-    public void SelectApplication(byte[] aid) => Send(new byte[] { 0x0C, 0xA4, 0x04, 0x0C }, aid, expectResponse: false);
+    /// <summary>SELECT an application by AID (P1=04, P2=0C); returns the status word.</summary>
+    public int TrySelectApplication(byte[] aid) => SendRaw(new byte[] { 0x0C, 0xA4, 0x04, 0x0C }, aid, false).Sw;
 
-    /// <summary>SELECT EF by file identifier (P1=02, P2=0C).</summary>
-    public void SelectFile(byte[] fileId)
-    {
-        var header = new byte[] { 0x0C, 0xA4, 0x02, 0x0C };
-        var response = Send(header, commandData: fileId, expectResponse: false);
-        // A successful SELECT returns only the status word (already checked in Send).
-        _ = response;
-    }
+    /// <summary>SELECT EF by file identifier (P1=02, P2=0C); returns the status word.</summary>
+    public int TrySelectFile(byte[] fileId) => SendRaw(new byte[] { 0x0C, 0xA4, 0x02, 0x0C }, fileId, false).Sw;
+
+    public void SelectApplication(byte[] aid) => Ensure(TrySelectApplication(aid));
+
+    public void SelectFile(byte[] fileId) => Ensure(TrySelectFile(fileId));
 
     /// <summary>Read the currently selected transparent EF in full.</summary>
     public byte[] ReadFile()
@@ -57,12 +55,23 @@ internal sealed class SecureMessaging
     private byte[] ReadBinary(int offset, int length)
     {
         var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0xFF), (byte)(offset & 0xFF) };
-        return Send(header, commandData: null, expectResponse: true, le: (byte)length);
+        var (sw, plain) = SendRaw(header, commandData: null, expectResponse: true, le: (byte)length);
+        if (sw != 0x9000)
+        {
+            if (offset == 0) throw new EmrtdException($"READ BINARY failed (status {sw:X4}).");
+            return Array.Empty<byte>();
+        }
+        return plain;
+    }
+
+    private static void Ensure(int sw)
+    {
+        if (sw != 0x9000) throw new EmrtdException($"Secure-messaging command failed (status {sw:X4}).");
     }
 
     // ----- Core secure-messaging wrap/unwrap ----------------------------------
 
-    private byte[] Send(byte[] header, byte[]? commandData, bool expectResponse, byte le = 0x00)
+    private (int Sw, byte[] Plain) SendRaw(byte[] header, byte[]? commandData, bool expectResponse, byte le = 0x00)
     {
         // header is the 4-byte CLA(0x0C) INS P1 P2. Pad it to the block size for the MAC.
         var maskedHeader = Emrtd.Pad(header);
@@ -94,13 +103,12 @@ internal sealed class SecureMessaging
         var resp = _transceive(apdu);
         if (resp is null || resp.Length < 2) throw new EmrtdException("No secure-messaging response.");
         var sw = (resp[^2] << 8) | resp[^1];
-        if (sw != 0x9000) throw new EmrtdException($"Secure-messaging command failed (status {sw:X4}).");
 
-        var respBody = resp[..^2];
-
-        // Verify the response checksum, then decrypt any DO87.
+        // Advance the counter for the response too, so it stays aligned even after a
+        // non-9000 status.
         _ssc = Increment(_ssc);
-        return VerifyAndExtract(respBody);
+        if (sw != 0x9000) return (sw, Array.Empty<byte>());
+        return (sw, VerifyAndExtract(resp[..^2]));
     }
 
     private byte[] VerifyAndExtract(byte[] respBody)

@@ -193,20 +193,52 @@ public sealed class Pace
 
     private Emrtd.Result ReadDg1OverSecureMessaging(PaceParameters pace, byte[] ksEnc, byte[] ksMac)
     {
+        ISecureMessaging sm = pace.Cipher == CipherAlg.Aes
+            ? new AesSecureMessaging(_transceive, ksEnc, ksMac)
+            // 3DES PACE reuses the retail-MAC secure messaging with a zero send-sequence counter.
+            : new SecureMessaging(_transceive, ksEnc, ksMac, new byte[8]);
+
+        var report = new StringBuilder();
+        report.AppendLine("PACE authentication succeeded. Card structure probe:");
+
+        // 1. Standard ICAO eMRTD application, then EF.DG1.
         var aid = new byte[] { 0xA0, 0x00, 0x00, 0x02, 0x47, 0x10, 0x01 };
-        if (pace.Cipher == CipherAlg.Aes)
+        var swApp = sm.TrySelectApplication(aid);
+        report.AppendLine($"• SELECT eMRTD app A0000002471001: {swApp:X4}");
+        if (swApp == 0x9000)
         {
-            var sm = new AesSecureMessaging(_transceive, ksEnc, ksMac);
-            sm.SelectApplication(aid);
-            sm.SelectFile(new byte[] { 0x01, 0x01 });
-            return Emrtd.BuildResultFromDg1(sm.ReadFile());
+            var swDg1 = sm.TrySelectFile(new byte[] { 0x01, 0x01 });
+            report.AppendLine($"• SELECT EF.DG1 (0101): {swDg1:X4}");
+            if (swDg1 == 0x9000) return Emrtd.BuildResultFromDg1(sm.ReadFile());
         }
 
-        // 3DES PACE: reuse the retail-MAC secure messaging with a zero send-sequence counter.
-        var sm3 = new SecureMessaging(_transceive, ksEnc, ksMac, new byte[8]);
-        sm3.SelectApplication(aid);
-        sm3.SelectFile(new byte[] { 0x01, 0x01 });
-        return Emrtd.BuildResultFromDg1(sm3.ReadFile());
+        // Reset to the master file for the remaining probes.
+        report.AppendLine($"• SELECT MF (3F00): {sm.TrySelectFile(new byte[] { 0x3F, 0x00 }):X4}");
+
+        // 2. EF.DIR lists the applications on the card (identifiers only, no personal data).
+        var (swDir, dir) = TryReadFile(sm, new byte[] { 0x2F, 0x00 });
+        report.AppendLine($"• EF.DIR (2F00): {swDir:X4}" + (dir.Length > 0 ? $" -> {Convert.ToHexString(dir)}" : ""));
+
+        // 3. EF.COM lists which data groups are present (tags only, no personal data).
+        var (swCom, com) = TryReadFile(sm, new byte[] { 0x01, 0x1E });
+        report.AppendLine($"• EF.COM (011E): {swCom:X4}" + (com.Length > 0 ? $" -> {Convert.ToHexString(com)}" : ""));
+
+        // 4. EF.DG1 directly under the master file.
+        var swDg1Mf = sm.TrySelectFile(new byte[] { 0x01, 0x01 });
+        report.AppendLine($"• SELECT EF.DG1 at MF (0101): {swDg1Mf:X4}");
+        if (swDg1Mf == 0x9000) return Emrtd.BuildResultFromDg1(sm.ReadFile());
+
+        report.AppendLine();
+        report.Append("No ICAO DG1 found, but the secure channel works. The status words above map the card so a targeted read can be added.");
+        return new Emrtd.Result(string.Empty, report.ToString());
+    }
+
+    private static (int Sw, byte[] Data) TryReadFile(ISecureMessaging sm, byte[] fid)
+    {
+        var sw = sm.TrySelectFile(fid);
+        if (sw != 0x9000) return (sw, Array.Empty<byte>());
+        try { return (sw, sm.ReadFile()); }
+        catch (EmrtdException) { return (sw, Array.Empty<byte>()); }
     }
 
     // ----- key derivation and MAC ---------------------------------------------

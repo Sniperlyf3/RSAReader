@@ -12,7 +12,7 @@ namespace RSAReader;
 /// AES-CMAC truncated to 8 bytes. Handles the SELECT-EF and READ-BINARY commands
 /// needed to read a data group.
 /// </summary>
-internal sealed class AesSecureMessaging
+internal sealed class AesSecureMessaging : ISecureMessaging
 {
     private const int Block = 16;
 
@@ -29,9 +29,13 @@ internal sealed class AesSecureMessaging
         _ssc = new byte[Block];
     }
 
-    public void SelectApplication(byte[] aid) => Send(new byte[] { 0x0C, 0xA4, 0x04, 0x0C }, aid, expectResponse: false);
+    public int TrySelectApplication(byte[] aid) => SendRaw(new byte[] { 0x0C, 0xA4, 0x04, 0x0C }, aid, false).Sw;
 
-    public void SelectFile(byte[] fileId) => Send(new byte[] { 0x0C, 0xA4, 0x02, 0x0C }, fileId, expectResponse: false);
+    public int TrySelectFile(byte[] fileId) => SendRaw(new byte[] { 0x0C, 0xA4, 0x02, 0x0C }, fileId, false).Sw;
+
+    public void SelectApplication(byte[] aid) => Ensure(TrySelectApplication(aid));
+
+    public void SelectFile(byte[] fileId) => Ensure(TrySelectFile(fileId));
 
     public byte[] ReadFile()
     {
@@ -55,10 +59,21 @@ internal sealed class AesSecureMessaging
     private byte[] ReadBinary(int offset, int length)
     {
         var header = new byte[] { 0x0C, 0xB0, (byte)(offset >> 8 & 0x7F), (byte)(offset & 0xFF) };
-        return Send(header, commandData: null, expectResponse: true, le: (byte)length);
+        var (sw, plain) = SendRaw(header, commandData: null, expectResponse: true, le: (byte)length);
+        if (sw != 0x9000)
+        {
+            if (offset == 0) throw new EmrtdException($"READ BINARY failed (status {sw:X4}).");
+            return Array.Empty<byte>();
+        }
+        return plain;
     }
 
-    private byte[] Send(byte[] header, byte[]? commandData, bool expectResponse, byte le = 0x00)
+    private static void Ensure(int sw)
+    {
+        if (sw != 0x9000) throw new EmrtdException($"Secure-messaging command failed (status {sw:X4}).");
+    }
+
+    private (int Sw, byte[] Plain) SendRaw(byte[] header, byte[]? commandData, bool expectResponse, byte le = 0x00)
     {
         _ssc = Increment(_ssc);
 
@@ -86,10 +101,12 @@ internal sealed class AesSecureMessaging
         var resp = _transceive(apdu);
         if (resp is null || resp.Length < 2) throw new EmrtdException("No secure-messaging response.");
         var sw = (resp[^2] << 8) | resp[^1];
-        if (sw != 0x9000) throw new EmrtdException($"Secure-messaging command failed (status {sw:X4}).");
 
+        // Advance the counter for the response too, so it stays aligned even after a
+        // non-9000 status (the card increments on every command/response pair).
         _ssc = Increment(_ssc);
-        return VerifyAndExtract(resp[..^2]);
+        if (sw != 0x9000) return (sw, Array.Empty<byte>());
+        return (sw, VerifyAndExtract(resp[..^2]));
     }
 
     private byte[] VerifyAndExtract(byte[] respBody)
