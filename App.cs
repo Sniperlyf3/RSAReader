@@ -1,5 +1,6 @@
 namespace RSAReader;
 public sealed class App : Application
 {
-    public App() => MainPage = new NavigationPage(new MainPage());
+    protected override Window CreateWindow(IActivationState? activationState) =>
+        new(new NavigationPage(new MainPage()));
 }

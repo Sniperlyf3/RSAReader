@@ -25,27 +25,69 @@ jobs:
         run: dotnet workload install maui-android
 
       - name: Restore
-        run: dotnet restore RSAReader.csproj
+        run: dotnet restore RSAReader.csproj -r android-arm64
 
-      - name: Build APK
-        run: dotnet publish RSAReader.csproj -f net9.0-android -c Debug -p:AndroidPackageFormats=apk -o artifacts
+      - name: Validate Release build for pull requests
+        if: github.event_name == 'pull_request'
+        run: dotnet publish RSAReader.csproj -f net9.0-android -c Release -r android-arm64 -o artifacts
 
-      - name: Stage signed APK only
+      - name: Restore signing identity
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          RSA_READER_KEYSTORE_B64: ${{ secrets.RSA_READER_KEYSTORE_B64 }}
+          RSA_READER_SIGNING_PASSWORD: ${{ secrets.RSA_READER_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RSA_READER_KEYSTORE_B64" ] || [ -z "$RSA_READER_SIGNING_PASSWORD" ]; then
+            echo "Set RSA_READER_KEYSTORE_B64 and RSA_READER_SIGNING_PASSWORD as repository Actions secrets."
+            exit 1
+          fi
+          umask 077
+          printf '%s' "$RSA_READER_KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/rsareader.p12"
+          keytool -list -keystore "$RUNNER_TEMP/rsareader.p12" -alias rsareader \
+            -storepass:env RSA_READER_SIGNING_PASSWORD > /dev/null
+
+      - name: Publish signed Release APK
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          RSA_READER_SIGNING_PASSWORD: ${{ secrets.RSA_READER_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version_code=$((10000 + GITHUB_RUN_NUMBER))
+          dotnet publish RSAReader.csproj -f net9.0-android -c Release -r android-arm64 \
+            -p:ApplicationVersion="$version_code" \
+            -p:ApplicationDisplayVersion="1.0.$GITHUB_RUN_NUMBER" \
+            -p:AndroidKeyStore=true \
+            -p:AndroidSigningKeyStore="$RUNNER_TEMP/rsareader.p12" \
+            -p:AndroidSigningKeyAlias=rsareader \
+            -p:AndroidSigningStorePass=env:RSA_READER_SIGNING_PASSWORD \
+            -p:AndroidSigningKeyPass=env:RSA_READER_SIGNING_PASSWORD \
+            -o artifacts
+
+      - name: Stage verified signed APK only
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p upload
           mapfile -t signed_apks < <(find artifacts -type f -name '*-Signed.apk' -print)
           if [ "${#signed_apks[@]}" -ne 1 ]; then
             echo "Expected exactly one signed APK, found ${#signed_apks[@]}"
-            printf '%s\n' "${signed_apks[@]}"
             exit 1
           fi
-          cp "${signed_apks[0]}" upload/RSAReader.apk
+          apk="${signed_apks[0]}"
+          apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          test -n "$apksigner"
+          "$apksigner" verify --verbose "$apk"
+          mkdir -p upload
+          cp "$apk" upload/RSAReader-arm64.apk
 
       - name: Upload signed APK
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: RSAReader-apk
-          path: upload/RSAReader.apk
+          name: RSAReader-arm64-signed
+          path: upload/RSAReader-arm64.apk
           if-no-files-found: error
+          compression-level: 0

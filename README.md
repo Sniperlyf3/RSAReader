@@ -1,24 +1,57 @@
 # RSAReader
 
-Android .NET MAUI prototype for inspecting the NFC interface exposed by a South African Smart ID card.
+An Android .NET MAUI reference app for inspecting the NFC interface of South African Smart ID cards. The card application and file layout are not documented publicly enough to assume an eMRTD layout, so this project records the observable ISO-DEP/APDU behavior without pretending the card format is known.
 
-## Build
+## Build and install
 
-Install the .NET 9 SDK, the MAUI Android workload (`dotnet workload install maui-android`), and the Android SDK. Then run:
+Install the .NET 9 SDK, MAUI Android workload (`dotnet workload install maui-android`), and Android SDK. Then run:
 
-```bash
-dotnet restore
-dotnet build -f net9.0-android
+```sh
+dotnet restore RSAReader.csproj -r android-arm64
+dotnet publish RSAReader.csproj -f net9.0-android -c Release -r android-arm64
 ```
 
-GitHub Actions also builds a Debug APK on every push and pull request and uploads it as the `RSAReader-apk` workflow artifact.
+The release build targets ARM64 phones. Full trimming and R8 shrink the managed and Java code; AOT is disabled to keep the APK small. The signed release APK is about 9.3 MB. Pull requests validate the release build without uploading an APK. Pushes to `main` and manual workflow runs upload only the verified signed `RSAReader-arm64.apk` as the `RSAReader-arm64-signed` artifact.
 
-## Current capabilities
+### Signing for in-place updates
 
-- Detects NFC-A/NFC-B tags.
-- Lists Android-reported NFC technologies.
-- Reports whether ISO-DEP is available.
-- Validates a manually entered South African ID number with its Luhn checksum.
-- Displays information encoded directly in the ID number.
+Android requires the package name and signing certificate to stay the same, and the new APK's version code must be higher. The CI workflow uses a dedicated keystore and assigns a version code of `10000 + GITHUB_RUN_NUMBER`. The keystore and its password belong in the repository's **Actions secrets**, not an Actions cache: caches are readable by pull requests and can expire.
 
-The current version does not attempt to bypass authentication or extract protected biometric data. The next research step is ISO-DEP/APDU protocol characterization using a personally owned test card.
+Generate one signing key with alias `rsareader` (the command prompts for its password), back up both the keystore and its password, then store them as the repository secrets `RSA_READER_KEYSTORE_B64` and `RSA_READER_SIGNING_PASSWORD`:
+
+```sh
+keytool -genkeypair -storetype PKCS12 -keystore rsareader.p12 \
+  -alias rsareader -keyalg RSA -keysize 3072 -validity 36500
+```
+
+Use the same password for the keystore and key. Put that password in a private text file. With an authenticated GitHub CLI, the helper uploads both secrets without printing either value:
+
+```sh
+./scripts/upload-signing-secrets.sh /path/to/rsareader.p12 /path/to/password.txt
+```
+
+The key must be created only once. If it is replaced or lost, Android will reject updates signed with the new key. The earlier CI Debug APKs were signed with temporary runner keys, so moving from one of those APKs to this release key requires one uninstall. Subsequent releases signed with this key install as updates.
+
+## What it does
+
+- Scans NFC-A and NFC-B tags while the app is open.
+- Lists Android-reported tag technologies, ISO-DEP support, max transceive size, and the available ISO-DEP historical or higher-layer bytes.
+- Provides a manual short-APDU probe. It sends no command automatically and accepts only `SELECT` (`A4`), `READ BINARY` (`B0`, `B1`), `GET DATA` (`CA`), `GET CHALLENGE` (`84`), and `GET RESPONSE` (`C0`) instruction bytes. Commands are not written to storage. `SELECT` and `GET CHALLENGE` can change transient card/session state.
+- Keeps the ISO-DEP connection open between taps while the same card remains in the field. This preserves selection state for a follow-up manual command; scanning another card or leaving the page resets it.
+- Offers a tap-to-run probe of four known application identifiers (ICAO travel document, NFC Forum Type 4 NDEF, PKCS#15, and a common GlobalPlatform card-manager AID). The probe shows status words and response lengths, never payload bytes. These identifiers are candidates, not a claimed South African ID card profile.
+- Displays APDU response bytes and status words on screen. Responses can contain personal information, so do not share screenshots or logs without checking them first.
+- Validates the Luhn checksum of a manually entered 13-digit South African ID number and displays the limited fields encoded in the number. This is not an identity check.
+
+NFC is optional for installation; the ID-number decoder remains available on devices without NFC.
+
+## Protocol research status
+
+The public South African Government description says the Smart ID chip contains biographic data and fingerprint biometrics, but does not specify the card application identifier, file identifiers, access-control procedure, or data encoding ([Smart ID card overview](https://www.gov.za/about-government/smart-identity-document-id-card-roll-out)). ISO-DEP only establishes the transport used to exchange APDUs. ICAO Doc 9303 defines an LDS for electronic machine-readable travel documents; that does not establish that the South African ID card uses that LDS ([ICAO Doc 9303](https://www.icao.int/publications/doc-series/doc-9303)).
+
+One observed card returned `6999` with no data for both `SELECT` of master-file ID `3F00` and `SELECT` of the ICAO LDS AID. Oracle's Java Card API names `6999` “applet selection failed”, but that does not establish the card's operating system or why selection failed ([Oracle status-word reference](https://docs.oracle.com/en/java/javacard/3.1/jc_api_srvc/api_classic/javacard/framework/ISO7816.html)). A [Government Printing Works annual report](https://nationalgovernment.co.za/entity_annual/153/2014-government-printing-works-annual-report.pdf) names Gemalto as the original supplier of the blank contactless cards. We have not found a public SA Smart ID AID, file map, or access policy. The probe narrows the possibilities without claiming that a rejected AID implies inaccessible data.
+
+The next useful evidence is anonymized captures from a card the researcher owns or is authorized to inspect: tag technologies and ATS/ATTRIB bytes, each command APDU, response status words, and redacted response payloads. Do not publish identity numbers, names, photographs, biometrics, access keys, or unredacted card dumps. No authentication bypass or write command is implemented.
+
+## Launch troubleshooting
+
+The Debug APK uploaded by the original CI workflow crashed on launch when installed by itself. On an Android 35 emulator, logcat reported `No assemblies found ... Assuming this is part of Fast Deployment`. The project sets `EmbedAssembliesIntoApk=true`, and CI now distributes a self-contained Release APK. If a future build still exits, capture the first fatal exception from `adb logcat` (`adb logcat -c`, launch RSAReader, then `adb logcat -d -b crash`), along with the Android version.
