@@ -85,6 +85,11 @@ public sealed class Pkcs15Collector
         if (privateFile?.SelectStatus == 0xFFFF) Report.Findings.Add("PrKDF was selected, but reading failed. Its contents and capabilities remain unknown.");
         if (privateFile is { Length: 0 }) Report.Findings.Add("PrKDF returned no bytes. A read error or access rule may explain this; private-key absence is unproven.");
         if (Report.Certificates.Count > 0) Report.Findings.Add("A certificate on the chip does not establish issuer trust without an authenticated CA chain and revocation evidence.");
+        foreach (var key in Report.Objects.Where(x => x.Directory == "5002" && x.KeyIdHash is not null))
+        {
+            if (Report.Objects.Any(x => x.Directory == "5003" && x.KeyIdHash == key.KeyIdHash))
+                Report.Findings.Add($"{key.Kind} and a certificate directory entry share a PKCS#15 key ID. This links records, but does not compare their public-key bytes.");
+        }
         if (Report.Objects.Any(x => x.Directory == "5002")) Report.Findings.Add("PuKDF directory entries identify public keys, but their key material has not been read; certificate-to-PuKDF equality is unverified.");
         return Report;
     }
