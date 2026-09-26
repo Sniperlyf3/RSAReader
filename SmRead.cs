@@ -19,7 +19,8 @@ internal static class SmRead
         {
             // Read a short header to learn this record's total length.
             var head = readChunk(offset, 4);
-            if (head.Length < 2) break; // end of file
+            if (head.Length < 2) break;                 // end of file
+            if (head[0] is 0x00 or 0xFF) break;         // padding after the last record
 
             int recordLen;
             try { recordLen = Emrtd.TlvTotalLength(head); }

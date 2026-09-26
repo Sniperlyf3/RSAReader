@@ -228,15 +228,123 @@ public sealed class Pace
         report.AppendLine($"• EF.TokenInfo (5032): {swTi:X4}" + (ti.Length > 0 ? $" -> {Hex(ti)}" : ""));
 
         // 4. ODF points to the per-type directory files (certificates, data objects, keys). Read each.
+        var cdf = Array.Empty<byte>();
         foreach (var (label, efid) in ParseOdfDirectoryFids(odf))
         {
             var (sw, body) = TryReadFile(sm, efid);
             report.AppendLine($"• {label} ({Hex(efid)}): {sw:X4}" + (body.Length > 0 ? $" -> {Hex(body)}" : ""));
+            if (label.StartsWith("CDF") && body.Length > 0) cdf = body;
+        }
+
+        // 5. Read the X.509 certificates the CDF references; their subject usually carries the
+        //    holder's name and ID number.
+        if (cdf.Length > 0)
+        {
+            report.AppendLine();
+            report.AppendLine("Certificates:");
+            foreach (var (label, fid) in ExtractObjectPaths(cdf))
+            {
+                var sw = sm.TrySelectFile(fid);
+                if (sw != 0x9000)
+                {
+                    report.AppendLine($"• {label} ({Hex(fid)}): SELECT {sw:X4}");
+                    continue;
+                }
+                var raw = sm.ReadEntireFile();
+                try
+                {
+                    var cert = new Org.BouncyCastle.X509.X509CertificateParser().ReadCertificate(raw);
+                    report.AppendLine($"• {label} ({Hex(fid)}):");
+                    report.AppendLine($"    Subject: {cert.SubjectDN}");
+                    report.AppendLine($"    Issuer:  {cert.IssuerDN}");
+                    report.AppendLine($"    Valid:   {cert.NotBefore:yyyy-MM-dd} .. {cert.NotAfter:yyyy-MM-dd}");
+                }
+                catch
+                {
+                    report.AppendLine($"• {label} ({Hex(fid)}): {raw.Length} bytes, not parseable as X.509 -> {Hex(raw)}");
+                }
+            }
         }
 
         report.AppendLine();
-        report.Append("PKCS#15 card. The directory files above list the object labels and paths; the next build can read the specific identity object and photo they point to.");
+        report.Append("This application is the card's PKI (keys, certificates, PINs). Demographic data and the photo are likely behind Home Affairs application keys that a CAN does not grant; the certificate subjects above are the identity data reachable this way.");
         return new Emrtd.Result(string.Empty, report.ToString());
+    }
+
+    /// <summary>Extracts (label, EF id) for each record in a PKCS#15 directory file (CDF/DODF/etc.).</summary>
+    private static IEnumerable<(string Label, byte[] Fid)> ExtractObjectPaths(byte[] df)
+    {
+        foreach (var record in SplitSequences(df))
+        {
+            var labelBytes = FindTagDeep(record, 0x0C);
+            var label = labelBytes is { Length: > 0 } ? System.Text.Encoding.UTF8.GetString(labelBytes) : "cert";
+            var path = FindPath(record);
+            if (path is { Length: >= 2 })
+                yield return (label, path[^2..]);
+        }
+    }
+
+    /// <summary>Splits a concatenation of DER SEQUENCE (0x30) records at the top level.</summary>
+    private static IEnumerable<byte[]> SplitSequences(byte[] data)
+    {
+        var i = 0;
+        while (i + 2 <= data.Length)
+        {
+            if (data[i] is 0x00 or 0xFF) break;
+            var tag = data[i];
+            var (len, hdr) = ParseLength(data, i + 1);
+            var total = 1 + hdr + len;
+            if (i + total > data.Length) break;
+            if (tag == 0x30) yield return data[i..(i + total)];
+            i += total;
+        }
+    }
+
+    /// <summary>The last OCTET STRING of length 2/4/6 in a record: a PKCS#15 file path.</summary>
+    private static byte[]? FindPath(byte[] data)
+    {
+        byte[]? path = null;
+        void Scan(byte[] d)
+        {
+            var i = 0;
+            while (i < d.Length)
+            {
+                var tag = d[i++];
+                if (i >= d.Length) break;
+                var (len, hdr) = ParseLength(d, i);
+                i += hdr;
+                if (i + len > d.Length) break;
+                var val = d[i..(i + len)];
+                if (tag == 0x04 && len is 2 or 4 or 6) path = val;
+                else if ((tag & 0x20) != 0) Scan(val); // constructed: descend
+                i += len;
+            }
+        }
+        Scan(data);
+        return path;
+    }
+
+    private static byte[]? FindTagDeep(byte[] data, byte target)
+    {
+        byte[]? found = null;
+        void Scan(byte[] d)
+        {
+            var i = 0;
+            while (i < d.Length && found is null)
+            {
+                var tag = d[i++];
+                if (i >= d.Length) break;
+                var (len, hdr) = ParseLength(d, i);
+                i += hdr;
+                if (i + len > d.Length) break;
+                var val = d[i..(i + len)];
+                if (tag == target) { found = val; return; }
+                if ((tag & 0x20) != 0) Scan(val);
+                i += len;
+            }
+        }
+        Scan(data);
+        return found;
     }
 
     private static string Hex(byte[] data)
