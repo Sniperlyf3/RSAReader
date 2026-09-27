@@ -10,6 +10,8 @@ internal interface ISecureMessaging
 {
     int TrySelectApplication(byte[] aid);
     int TrySelectFile(byte[] fileId);
+    /// <summary>SELECT a known EF requesting its FCI. The returned bytes remain local.</summary>
+    (int Status, byte[] Fci) TrySelectFileWithFci(byte[] fileId);
     void SelectApplication(byte[] aid);
     void SelectFile(byte[] fileId);
 

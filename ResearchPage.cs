@@ -46,7 +46,7 @@ public sealed class ResearchPage : ContentPage
                 Children =
                 {
                     new Label { Text = "Read-only research", FontSize = 24, FontAttributes = FontAttributes.Bold },
-                    new Label { Text = "Directory metadata, certificate extensions, and key fingerprints are shown here. Names, ID numbers, certificate serials, CAN, data-object values, and raw APDUs are excluded from copied reports." },
+                    new Label { Text = "Directory metadata, FCI tag names and lengths, certificate extensions, and key fingerprints are shown here. Names, ID numbers, certificate serials, CAN, FCI values, data-object values, and raw APDUs are excluded from copied reports." },
                     copy, open, _summary
                 }
             }

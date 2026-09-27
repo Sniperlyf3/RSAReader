@@ -33,6 +33,12 @@ internal sealed class AesSecureMessaging : ISecureMessaging
 
     public int TrySelectFile(byte[] fileId) => SendRaw(new byte[] { 0x0C, 0xA4, 0x02, 0x0C }, fileId, false).Sw;
 
+    public (int Status, byte[] Fci) TrySelectFileWithFci(byte[] fileId)
+    {
+        var (status, fci) = SendRaw(new byte[] { 0x0C, 0xA4, 0x02, 0x00 }, fileId, true);
+        return (status, fci);
+    }
+
     public void SelectApplication(byte[] aid) => Ensure(TrySelectApplication(aid));
 
     public void SelectFile(byte[] fileId) => Ensure(TrySelectFile(fileId));

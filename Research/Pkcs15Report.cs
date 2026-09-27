@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 namespace RSAReader.Research;
 
 public sealed record FileObservation(string Name, string Fid, int SelectStatus, int Length, string? Error);
+public sealed record FciObservation(string Fid, int SelectStatus, int Length, string? TagLengths, string? Error);
 public sealed record ObjectObservation(string Directory, string Kind, string? Label, string? KeyIdHash,
     string? Path, string? Usage, string? Access, string? AuthReference);
 public sealed record CertificateObservation(string Path, string Fingerprint, string PublicKeyHash,
@@ -21,6 +22,7 @@ public sealed class Pkcs15Report
     public int SchemaVersion { get; init; } = 1;
     public string ApplicationAid { get; set; } = "";
     public List<FileObservation> Files { get; init; } = [];
+    public List<FciObservation> SelectionMetadata { get; init; } = [];
     public List<ObjectObservation> Objects { get; init; } = [];
     public List<CertificateObservation> Certificates { get; init; } = [];
     public List<string> Findings { get; init; } = [];
@@ -35,6 +37,9 @@ public sealed class Pkcs15Report
         b.AppendLine($"PKCS#15 AID: {ApplicationAid}");
         foreach (var f in Files) b.AppendLine($"{f.Name} ({f.Fid}): {(f.SelectStatus == 0xFFFF ? "SELECT 9000; READ FAILED" : $"SELECT {f.SelectStatus:X4}")}, {f.Length} bytes" +
             (f.Error is null ? "" : $", read error: {f.Error}"));
+        foreach (var f in SelectionMetadata)
+            b.AppendLine($"FCI {f.Fid}: SELECT {f.SelectStatus:X4}, {f.Length} bytes, TLV tags/lengths: {f.TagLengths ?? "unavailable"}" +
+                (f.Error is null ? "" : $", {f.Error}"));
         foreach (var o in Objects) b.AppendLine($"{o.Directory}: {o.Kind}, label={o.Label ?? "?"}, path={o.Path ?? "?"}, key ID SHA-256={o.KeyIdHash ?? "?"}, usage={o.Usage ?? "?"}, access={o.Access ?? "?"}, auth ref={o.AuthReference ?? "?"}");
         foreach (var c in Certificates)
         {
@@ -71,6 +76,22 @@ public sealed class Pkcs15Collector
     }
 
     public void SetApplication(byte[] aid) => Report.ApplicationAid = Convert.ToHexString(aid);
+
+    public void ObserveFci(byte[] fid, int status, byte[] fci, string? error = null)
+    {
+        // FCI may contain file names or proprietary values. Export only TLV tags
+        // and lengths, never the raw bytes or values.
+        string? tags = null;
+        if (fci.Length > 0)
+        {
+            try { tags = string.Join(" ", Asn1Tree.Read(fci).Select(FormatTag)); }
+            catch (FormatException) { error = "FCI is not a bounded BER-TLV tree"; }
+        }
+        Report.SelectionMetadata.Add(new FciObservation(Convert.ToHexString(fid), status, fci.Length, tags, error));
+    }
+
+    private static string FormatTag(Asn1Node node) => $"{node.Tag:X}:{node.Value.Length}" +
+        (node.Children.Count == 0 ? "" : $"({string.Join(" ", node.Children.Select(FormatTag))})");
 
     public Pkcs15Report Analyze()
     {
