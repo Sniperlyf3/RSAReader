@@ -141,6 +141,10 @@ public sealed class Pkcs15Collector
                 string? authReference = null;
                 if (kind == "Authentication object")
                     (usage, access, authReference) = DescribeAuthentication(outer);
+                if (objectKind == "PIN authentication object" &&
+                    access?.Contains("unblocking-PIN", StringComparison.Ordinal) == true &&
+                    access.Contains("SO-PIN", StringComparison.Ordinal))
+                    Report.Findings.Add("A PIN record sets both unblocking-PIN and SO-PIN flags. PKCS#15 v1.1 disallows that combination; retain the raw flag interpretation but do not infer a supported operation from it.");
                 Report.Objects.Add(new ObjectObservation(fid, objectKind, label, idHash,
                     path is null ? null : Convert.ToHexString(path), usage, access, authReference));
             }
