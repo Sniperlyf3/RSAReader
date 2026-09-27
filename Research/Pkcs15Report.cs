@@ -8,7 +8,7 @@ namespace RSAReader.Research;
 
 public sealed record FileObservation(string Name, string Fid, int SelectStatus, int Length, string? Error);
 public sealed record MetadataObservation(string Reference, int Status, int Length, string? TagLengths, string? Error,
-    string? ControlValues = null);
+    string? ControlValues = null, string? AccessRule = null);
 public sealed record ApplicationObservation(string Name, string Aid, int SelectStatus, int FciStatus,
     int FciLength, string? FciTagLengths);
 public sealed record ObjectObservation(string Directory, string Kind, string? Label, string? KeyIdHash,
@@ -45,6 +45,7 @@ public sealed class Pkcs15Report
         foreach (var f in SelectionMetadata)
             b.AppendLine($"FCI {f.Reference}: SELECT {f.Status:X4}, {f.Length} bytes, TLV tags/lengths: {f.TagLengths ?? "unavailable"}" +
                 (f.ControlValues is null ? "" : $", file controls: {f.ControlValues}") +
+                (f.AccessRule is null ? "" : $", access rule: {f.AccessRule}") +
                 (f.Error is null ? "" : $", {f.Error}"));
         foreach (var f in BiometricInformation)
             b.AppendLine($"Biometric information tag {f.Reference}: GET DATA {f.Status:X4}, {f.Length} bytes, TLV tags/lengths: {f.TagLengths ?? "unavailable"}" +
@@ -102,7 +103,8 @@ public sealed class Pkcs15Collector
         // and lengths, never the raw bytes or values.
         var tags = DescribeTlv(fci, ref error);
         var controls = DescribeFciControls(fci);
-        Report.SelectionMetadata.Add(new MetadataObservation(Convert.ToHexString(fid), status, fci.Length, tags, error, controls));
+        var rule = DescribeCompactEfAccess(fci);
+        Report.SelectionMetadata.Add(new MetadataObservation(Convert.ToHexString(fid), status, fci.Length, tags, error, controls, rule));
     }
 
     private static string? DescribeFciControls(byte[] fci)
@@ -115,14 +117,46 @@ public sealed class Pkcs15Collector
             // Only fixed-size ISO file-control fields. A DF name (84) and all
             // proprietary or variable-length values are deliberately omitted.
             var expectedLengths = new Dictionary<int, int> { [0x81] = 2, [0x82] = 1,
-                [0x83] = 2, [0x8A] = 1, [0x8C] = 3 };
+                [0x83] = 2, [0x8A] = 1 };
             var parts = template.Children
                 .Where(x => expectedLengths.TryGetValue(x.Tag, out var size) && x.Value.Length == size)
+                .Concat(template.Children.Where(x => x.Tag == 0x8C && x.Value.Length is 2 or 3))
                 .Select(x => $"{x.Tag:X2}={Convert.ToHexString(x.Value)}");
             var result = string.Join(" ", parts);
             return result.Length == 0 ? null : result;
         }
         catch (FormatException) { return null; }
+    }
+
+    private static string? DescribeCompactEfAccess(byte[] fci)
+    {
+        try
+        {
+            var template = Asn1Tree.Read(fci).FirstOrDefault(x => x.Tag == 0x6F);
+            var descriptor = template?.Child(0x82)?.Value;
+            var rule = template?.Child(0x8C)?.Value;
+            // Transparent EF, one compact rule: b2 UPDATE, b1 READ. ISO 7816-4
+            // places the security bytes in descending bit order.
+            if (descriptor is not [0x01] || rule is not [0x03, _, _]) return null;
+            return $"UPDATE/ERASE: {DescribeSecurityCondition(rule[1])}; READ: {DescribeSecurityCondition(rule[2])}";
+        }
+        catch (FormatException) { return null; }
+    }
+
+    private static string DescribeSecurityCondition(byte value)
+    {
+        if (value == 0x00) return "no condition";
+        if (value == 0xFF) return "never";
+        var requirements = new List<string>();
+        if ((value & 0x40) != 0) requirements.Add("secure messaging");
+        if ((value & 0x20) != 0) requirements.Add("external authentication");
+        if ((value & 0x10) != 0) requirements.Add("user authentication");
+        if (requirements.Count == 0) return $"unrecognized condition {value:X2}";
+        var joiner = (value & 0x80) != 0 ? " and " : " or ";
+        var environment = value & 0x0F;
+        return string.Join(joiner, requirements) +
+            (environment == 0 ? " (default security environment)" : environment == 15
+                ? " (reserved environment reference)" : $" (security environment {environment})");
     }
 
     public void ObserveBiometricInformation(byte[] tag, int status, byte[] data, string? error = null)
