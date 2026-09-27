@@ -33,7 +33,8 @@ public sealed record DiscoveredAidObservation(string RequestedPrefix, string? Di
 public sealed record CertificateObservation(string Path, string Fingerprint, string PublicKeyHash,
     string PublicKeyAlgorithm, string SignatureAlgorithm, string NotBefore, string NotAfter,
     string KeyUsage, string ExtendedKeyUsage, string BasicConstraints, string SubjectKeyIdentifier,
-    string AuthorityKeyIdentifier, string Policies, string ChainResult);
+    string AuthorityKeyIdentifier, string Policies, string ChainResult,
+    string AuthorityInfoAccess = "not present", string CrlDistributionPoints = "not present");
 
 // This is the export format. It intentionally contains no raw ASN.1, certificate
 // subject/issuer, serial number, data-object value, CAN, or wire APDU.
@@ -94,6 +95,8 @@ public sealed class Pkcs15Report
             b.AppendLine($"  Public key: {c.PublicKeyAlgorithm} SHA-256 {c.PublicKeyHash}; signature: {c.SignatureAlgorithm}");
             b.AppendLine($"  Valid: {c.NotBefore} .. {c.NotAfter}; key usage: {c.KeyUsage}; EKU: {c.ExtendedKeyUsage}");
             b.AppendLine($"  CA: {c.BasicConstraints}; SKI: {c.SubjectKeyIdentifier}; AKI: {c.AuthorityKeyIdentifier}; policies: {c.Policies}");
+            b.AppendLine($"  AIA: {c.AuthorityInfoAccess}");
+            b.AppendLine($"  CRL: {c.CrlDistributionPoints}");
             b.AppendLine($"  Chain: {c.ChainResult}");
         }
         foreach (var finding in Findings) b.AppendLine($"• {finding}");
@@ -321,7 +324,14 @@ public sealed class Pkcs15Collector
             Report.Findings.Add(Report.Findings.Any(x => x.Contains("PrKDF one-byte READ BINARY returned 6982", StringComparison.Ordinal))
                 ? "PrKDF READ BINARY reported security condition not satisfied in this PACE/CAN session. Its contents and private-key capabilities remain unknown."
                 : "PrKDF returned no bytes. A read error or access rule may explain this; private-key absence is unproven.");
-        if (Report.Certificates.Count > 0) Report.Findings.Add("A certificate on the chip does not establish issuer trust without an authenticated CA chain and revocation evidence.");
+        if (Report.Certificates.Count > 0)
+        {
+            var verified = Report.Certificates.Where(c => c.ChainResult.StartsWith("Verified", StringComparison.Ordinal)).ToList();
+            if (verified.Count > 0)
+                Report.Findings.Add($"{verified.Count} certificate(s) chain to a pinned LAWtrust root offline; this confirms the issuing PKI and binds the subject (name and ID number) in the certificate, but revocation was not checked and this is not clone detection without Chip Authentication.");
+            else
+                Report.Findings.Add("No on-chip certificate chained to a pinned LAWtrust root. Issuer trust is therefore unproven; the issuing CA may be a LAWtrust sub-CA not in the pinned bundle (check the certificate's AIA caIssuers URL).");
+        }
         foreach (var key in Report.Objects.Where(x => x.Directory == "5002" && x.KeyIdHash is not null))
         {
             if (Report.Objects.Any(x => x.Directory == "5003" && x.KeyIdHash == key.KeyIdHash))
@@ -398,10 +408,10 @@ public sealed class Pkcs15Collector
             var ski = cert.Extensions.OfType<X509SubjectKeyIdentifierExtension>().FirstOrDefault();
             var aki = cert.Extensions["2.5.29.35"];
             var policies = cert.Extensions["2.5.29.32"];
+            var aia = cert.Extensions["1.3.6.1.5.5.7.1.1"];
+            var crlDp = cert.Extensions["2.5.29.31"];
             // ExportSubjectPublicKeyInfo is canonical for comparing certificate and PuKDF keys.
             var spki = cert.PublicKey.ExportSubjectPublicKeyInfo();
-            // No trusted Home Affairs root has been configured. Do not interpret a
-            // platform-chain result as independent card authenticity verification.
             Report.Certificates.Add(new CertificateObservation(path, Hash(der), Hash(spki),
                 cert.PublicKey.Oid?.FriendlyName ?? cert.PublicKey.Oid?.Value ?? "unknown",
                 cert.SignatureAlgorithm?.Value ?? "unknown", cert.NotBefore.ToString("yyyy-MM-dd"),
@@ -411,9 +421,90 @@ public sealed class Pkcs15Collector
                 ski is null ? "not present" : Hash(Convert.FromHexString(ski.SubjectKeyIdentifier ?? "")),
                 aki is null ? "not present" : DescribeAuthorityKeyIdentifier(aki.RawData),
                 policies is null ? "not present" : DescribePolicies(policies.RawData),
-                "Unverified: no trusted issuer chain supplied"));
+                BuildChainResult(cert),
+                DescribeAuthorityInfoAccess(aia),
+                crlDp is null ? "not present" : DescribeUris(crlDp.RawData, "CRL")));
         }
         catch (Exception ex) { Report.Findings.Add($"Certificate {path} could not be decoded: {ex.GetType().Name}"); }
+    }
+
+    // Attempt an offline chain build against the pinned LAWtrust roots. This is the
+    // real issuer-trust gate: it says whether the on-chip certificate was issued by
+    // the expected PKI, not merely that a certificate is present. Revocation is not
+    // checked here (no network in this path); the CRL/OCSP URLs are reported instead.
+    private static string BuildChainResult(X509Certificate2 cert)
+    {
+        try
+        {
+            using var chain = new X509Chain();
+            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+            chain.ChainPolicy.DisableCertificateDownloads = true;
+            chain.ChainPolicy.VerificationFlags = X509VerificationFlags.IgnoreNotTimeValid;
+            foreach (var root in LawTrustAnchors.Roots()) chain.ChainPolicy.CustomTrustStore.Add(root);
+            foreach (var mid in LawTrustAnchors.Intermediates()) chain.ChainPolicy.ExtraStore.Add(mid);
+            var built = chain.Build(cert);
+            var anchor = chain.ChainElements.Count > 0 ? chain.ChainElements[^1].Certificate : null;
+            var reachedPinned = anchor is not null && LawTrustAnchors.IsPinnedRoot(anchor);
+            var anchorName = anchor is null ? "unknown" : CommonName(anchor.Subject);
+            var statuses = chain.ChainStatus.Length == 0 ? "none"
+                : string.Join(", ", chain.ChainStatus.Select(s => s.Status.ToString()).Distinct());
+            if (built && reachedPinned)
+                return $"Verified: chains to pinned {anchorName} ({chain.ChainElements.Count} elements); time validity and revocation not asserted here";
+            if (reachedPinned)
+                return $"Chains to pinned {anchorName} but chain flagged: {statuses}";
+            return $"Unverified: does not chain to a pinned LAWtrust root ({statuses}). Issuing CA may be a LAWtrust sub-CA not published in the repository.";
+        }
+        catch (Exception ex) { return $"Chain build error: {ex.GetType().Name}"; }
+    }
+
+    private static string CommonName(string distinguishedName)
+    {
+        foreach (var part in distinguishedName.Split(','))
+        {
+            var t = part.Trim();
+            if (t.StartsWith("CN=", StringComparison.OrdinalIgnoreCase)) return t[3..];
+        }
+        return distinguishedName;
+    }
+
+    private static string DescribeAuthorityInfoAccess(X509Extension? aia)
+    {
+        if (aia is null) return "not present";
+        try
+        {
+            var ext = new X509AuthorityInformationAccessExtension(aia.RawData, aia.Critical);
+            var caIssuers = ext.EnumerateCAIssuersUris().ToList();
+            var ocsp = ext.EnumerateOcspUris().ToList();
+            var parts = new List<string>();
+            if (caIssuers.Count > 0) parts.Add("caIssuers: " + string.Join(" ", caIssuers));
+            if (ocsp.Count > 0) parts.Add("OCSP: " + string.Join(" ", ocsp));
+            return parts.Count == 0 ? "present; no URIs" : string.Join("; ", parts);
+        }
+        catch (Exception) { return "present; parse failed"; }
+    }
+
+    // Collect the IA5String URIs (context tag [6]) from a distribution-point or AIA
+    // extension. Only URLs are exported; these are issuer/revocation endpoints, not
+    // cardholder data.
+    private static string DescribeUris(byte[] der, string label)
+    {
+        var urls = new List<string>();
+        try
+        {
+            void Walk(IReadOnlyList<Asn1Node> nodes)
+            {
+                foreach (var n in nodes)
+                {
+                    if (n.Tag == 0x86 && n.Value.Length > 0)
+                        urls.Add(Encoding.ASCII.GetString(n.Value));
+                    if (n.Children.Count > 0) Walk(n.Children);
+                }
+            }
+            Walk(Asn1Tree.Read(der));
+        }
+        catch (FormatException) { return $"{label}: present; parse failed"; }
+        return urls.Count == 0 ? $"{label}: present; no URIs" : $"{label}: {string.Join(" ", urls)}";
     }
 
     private static string Hash(byte[] value) => Convert.ToHexString(SHA256.HashData(value));

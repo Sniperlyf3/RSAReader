@@ -155,4 +155,31 @@ if (!classified.Findings.Any(f => f.Contains("Access rules for genuinely new SFI
 if (Pkcs15Report.FromJson(classified.ToJson()).ShortEfs.First(e => e.Sfi == 0x14).IdentityMatch?.StartsWith("distinct") != true)
     throw new Exception("Short-EF identity verdict did not round-trip.");
 
+// ----- Pinned LAWtrust chain validation + AIA/CRL extraction ----------------
+if (LawTrustAnchors.Roots().Count != 2 || LawTrustAnchors.Intermediates().Count != 7)
+    throw new Exception("Pinned LAWtrust anchor bundle did not load the expected certificates.");
+var chainProbe = new Pkcs15Collector();
+using (var authCa01 = LawTrustAnchors.Intermediates()[1]) // LAWtrust AUTH CA01: has AIA + CRL, chains to a pinned root
+    chainProbe.ObserveEmbeddedCertificate("test intermediate", authCa01.RawData);
+var chainCert = chainProbe.Report.Certificates.Single();
+if (!chainCert.ChainResult.StartsWith("Verified", StringComparison.Ordinal))
+    throw new Exception($"Known LAWtrust CA did not verify against the pinned roots: {chainCert.ChainResult}");
+if (!chainCert.AuthorityInfoAccess.Contains("caIssuers") || !chainCert.AuthorityInfoAccess.Contains("LTRootCA02.cer"))
+    throw new Exception($"AIA caIssuers URL was not extracted: {chainCert.AuthorityInfoAccess}");
+if (!chainCert.CrlDistributionPoints.Contains("crl.lawtrust.co.za"))
+    throw new Exception($"CRL distribution point was not extracted: {chainCert.CrlDistributionPoints}");
+
+// A certificate that is not from the LAWtrust PKI must not verify.
+var stranger = new Pkcs15Collector();
+using (var rsa = System.Security.Cryptography.RSA.Create(2048))
+{
+    var req = new System.Security.Cryptography.X509Certificates.CertificateRequest(
+        "CN=Not LAWtrust", rsa, System.Security.Cryptography.HashAlgorithmName.SHA256,
+        System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+    using var selfSigned = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    stranger.ObserveEmbeddedCertificate("stranger", selfSigned.RawData);
+}
+if (!stranger.Report.Certificates.Single().ChainResult.StartsWith("Unverified", StringComparison.Ordinal))
+    throw new Exception("A non-LAWtrust certificate was not rejected by the pinned chain check.");
+
 Console.WriteLine("Research fixture replay and directory decoding passed.");
