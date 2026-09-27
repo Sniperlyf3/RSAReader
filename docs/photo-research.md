@@ -35,3 +35,19 @@ These sweeps change the current selection and run last, so they cannot disturb t
 ## Remaining physical work
 
 We need a fresh card scan to learn whether directory tails contain only padding and whether the new path-selection methods work on this profile. Public Gemalto documentation suggests separate PKI/storage/biometric applications on some platform families; it does not identify this card's portrait AID. A trace from a reader that actually displays the chip portrait would be valuable. No photo has been located or decoded by this change, and no identity-verification integration is added.
+
+### Short-EF read recovery
+
+The SFI sweep retries empty `6282` or `9000` responses with progressively
+smaller lengths at the same offset, down to one byte. Before the first bytes
+arrive, retries retain the SFI in READ BINARY. Subsequent reads advance by the
+actual returned length, including after short responses. This recovers tails
+from cards that reject a request extending beyond the file.
+
+Each capture exports its DF context, initial and terminal status, and individual
+read offsets, requested lengths, statuses and returned lengths. A one-byte empty
+response establishes an observed read boundary only; the file size remains
+unconfirmed. Other errors and the 4 KiB / 512-command limits are explicitly
+reported as incomplete. TLV parse failures are retained as metadata, without
+exporting content. Failed context selection skips that sweep, and session
+failures stop probing. No card content from diagnostic traces is stored in source.

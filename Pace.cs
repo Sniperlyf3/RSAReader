@@ -425,10 +425,14 @@ public sealed class Pace
                 ChipEnumeration.ReadCardSecurity(sm, _collector, report);
                 var mfContext = sm.TrySelectPath([0x3F, 0x00, 0x2F, 0x00]).Status;
                 report.AppendLine($"(MF selection for sweep: {mfContext:X4})");
-                ChipEnumeration.SweepShortEfs(sm, _collector, "master file", report);
+                if (mfContext == 0x9000)
+                    ChipEnumeration.SweepShortEfs(sm, _collector, "master file", report);
+                else report.AppendLine("MF sweep skipped: context selection failed.");
                 var reselect = sm.TrySelectApplication(aid);
                 report.AppendLine($"(PKCS#15 app re-selection for sweep: {reselect:X4})");
-                ChipEnumeration.SweepShortEfs(sm, _collector, "PKCS#15 application", report);
+                if (reselect == 0x9000)
+                    ChipEnumeration.SweepShortEfs(sm, _collector, "PKCS#15 application", report);
+                else report.AppendLine("Application sweep skipped: context selection failed.");
                 ChipEnumeration.EnumerateAids(sm, _collector, report);
             }
             catch (EmrtdException ex)
