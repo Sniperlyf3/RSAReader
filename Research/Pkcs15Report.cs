@@ -7,7 +7,8 @@ using System.Text.Json.Serialization;
 namespace RSAReader.Research;
 
 public sealed record FileObservation(string Name, string Fid, int SelectStatus, int Length, string? Error);
-public sealed record MetadataObservation(string Reference, int Status, int Length, string? TagLengths, string? Error);
+public sealed record MetadataObservation(string Reference, int Status, int Length, string? TagLengths, string? Error,
+    string? ControlValues = null);
 public sealed record ObjectObservation(string Directory, string Kind, string? Label, string? KeyIdHash,
     string? Path, string? Usage, string? Access, string? AuthReference);
 public sealed record CertificateObservation(string Path, string Fingerprint, string PublicKeyHash,
@@ -40,6 +41,7 @@ public sealed class Pkcs15Report
             (f.Error is null ? "" : $", read error: {f.Error}"));
         foreach (var f in SelectionMetadata)
             b.AppendLine($"FCI {f.Reference}: SELECT {f.Status:X4}, {f.Length} bytes, TLV tags/lengths: {f.TagLengths ?? "unavailable"}" +
+                (f.ControlValues is null ? "" : $", file controls: {f.ControlValues}") +
                 (f.Error is null ? "" : $", {f.Error}"));
         foreach (var f in BiometricInformation)
             b.AppendLine($"Biometric information tag {f.Reference}: GET DATA {f.Status:X4}, {f.Length} bytes, TLV tags/lengths: {f.TagLengths ?? "unavailable"}" +
@@ -86,7 +88,28 @@ public sealed class Pkcs15Collector
         // FCI may contain file names or proprietary values. Export only TLV tags
         // and lengths, never the raw bytes or values.
         var tags = DescribeTlv(fci, ref error);
-        Report.SelectionMetadata.Add(new MetadataObservation(Convert.ToHexString(fid), status, fci.Length, tags, error));
+        var controls = DescribeFciControls(fci);
+        Report.SelectionMetadata.Add(new MetadataObservation(Convert.ToHexString(fid), status, fci.Length, tags, error, controls));
+    }
+
+    private static string? DescribeFciControls(byte[] fci)
+    {
+        if (fci.Length == 0) return null;
+        try
+        {
+            var template = Asn1Tree.Read(fci).FirstOrDefault(x => x.Tag == 0x6F);
+            if (template is null) return null;
+            // Only fixed-size ISO file-control fields. A DF name (84) and all
+            // proprietary or variable-length values are deliberately omitted.
+            var expectedLengths = new Dictionary<int, int> { [0x81] = 2, [0x82] = 1,
+                [0x83] = 2, [0x8A] = 1, [0x8C] = 3 };
+            var parts = template.Children
+                .Where(x => expectedLengths.TryGetValue(x.Tag, out var size) && x.Value.Length == size)
+                .Select(x => $"{x.Tag:X2}={Convert.ToHexString(x.Value)}");
+            var result = string.Join(" ", parts);
+            return result.Length == 0 ? null : result;
+        }
+        catch (FormatException) { return null; }
     }
 
     public void ObserveBiometricInformation(byte[] tag, int status, byte[] data, string? error = null)
