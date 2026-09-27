@@ -56,7 +56,7 @@ var biometric = new Pkcs15Collector();
 biometric.Observe("AODF", [0x50, 0x06], 0x9000,
     Convert.FromHexString("A020300030040402AA21A11630140302078006032B060130060A01000A0100020121"));
 var bioObject = biometric.Analyze().Objects.Single();
-if (bioObject.Usage != "template OID 1.3.6.1; type 0/0" ||
+if (bioObject.Usage != "template OID 1.3.6.1; left thumb fingerprint (0/0)" ||
     bioObject.AuthReference != "biometric reference 33")
     throw new Exception("Biometric template metadata was not decoded.");
 var opaque = System.Text.Encoding.ASCII.GetBytes("Label with a non-TLV length");
