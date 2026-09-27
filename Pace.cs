@@ -217,7 +217,8 @@ public sealed class Pace
         _collector?.Observe("EF.DIR", [0x2F, 0x00], swDir, dir);
         report.AppendLine($"• EF.DIR (2F00): {ReadStatus(swDir)}" + (dir.Length > 0 ? $" -> {Hex(dir)}" : ""));
 
-        var aid = swDir == 0x9000 ? FindTag(FindTag(dir, 0x61) ?? dir, 0x4F) : null;
+        var advertisedAids = swDir == 0x9000 ? FindAidsInDir(dir) : [];
+        var aid = advertisedAids.FirstOrDefault();
         if (aid is null)
         {
             report.AppendLine().Append("Secure channel works but no application AID was found in EF.DIR.");
@@ -375,6 +376,40 @@ public sealed class Pace
             }
         }
 
+        // Application selection is transient but can switch card state, so do
+        // it last. These candidates are documented AIDs, not a range scan.
+        if (_collector is not null)
+        {
+            report.AppendLine();
+            report.AppendLine("Application selection under PACE (FCI values hidden):");
+            var candidates = advertisedAids.Select((value, index) => ($"EF.DIR entry {index + 1}", value))
+                .Concat(new (string Name, byte[] Aid)[]
+                {
+                    ("ICAO LDS1", Convert.FromHexString("A0000002471001")),
+                    ("NFC Forum Type 4 NDEF", Convert.FromHexString("D2760000850101")),
+                    ("PIV", Convert.FromHexString("A000000308000010000100")),
+                    ("PKCS#15 standard", Convert.FromHexString("A000000063504B43532D3135"))
+                })
+                .DistinctBy(x => Convert.ToHexString(x.Item2));
+            foreach (var (name, candidateAid) in candidates)
+            {
+                try
+                {
+                    var (fciStatus, fci) = sm.TrySelectApplicationWithFci(candidateAid);
+                    var selectStatus = fciStatus == 0x6A86
+                        ? sm.TrySelectApplication(candidateAid) : fciStatus;
+                    _collector.ObserveApplication(name, candidateAid, selectStatus, fciStatus, fci);
+                    report.AppendLine($"• {name} ({Hex(candidateAid)}): {selectStatus:X4}, FCI {fciStatus:X4}, {fci.Length} bytes hidden");
+                }
+                catch (EmrtdException ex)
+                {
+                    _collector.ObserveApplication(name, candidateAid, 0xFFFF, 0xFFFF, []);
+                    report.AppendLine($"• {name}: selection failed: {ex.Message}");
+                    break;
+                }
+            }
+        }
+
         report.AppendLine();
         report.Append("Gemalto PKCS#15 application read over PACE. Certificate subjects and data-object contents above show what this CAN-authenticated channel exposes.");
         return new Emrtd.Result(string.Empty, report.ToString());
@@ -391,6 +426,22 @@ public sealed class Pace
             if (path is { Length: >= 2 })
                 yield return (label, path[^2..]);
         }
+    }
+
+    private static IReadOnlyList<byte[]> FindAidsInDir(byte[] dir)
+    {
+        try
+        {
+            return Asn1Tree.Read(dir)
+                .Where(x => x.Tag == 0x61)
+                .SelectMany(x => x.Descendants(0x4F))
+                .Select(x => x.Value)
+                .Where(x => x.Length is >= 5 and <= 16)
+                .DistinctBy(Convert.ToHexString)
+                .Take(16)
+                .ToArray();
+        }
+        catch (FormatException) { return []; }
     }
 
     /// <summary>Splits a concatenation of DER SEQUENCE (0x30) records at the top level.</summary>
