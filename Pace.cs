@@ -358,6 +358,23 @@ public sealed class Pace
             }
         }
 
+        // Request FCI for the AID disclosed in EF.DIR. Its control fields may
+        // describe a DF-level route to other application data.
+        if (_collector is not null)
+        {
+            try
+            {
+                var (status, fci) = sm.TrySelectApplicationWithFci(aid);
+                _collector.ObserveFci(aid, status, fci);
+                report.AppendLine($"• Application {Hex(aid)} FCI: {status:X4}, {fci.Length} bytes hidden");
+            }
+            catch (EmrtdException ex)
+            {
+                _collector.ObserveFci(aid, 0xFFFF, [], ex.Message);
+                report.AppendLine($"• Application FCI query failed: {ex.Message}");
+            }
+        }
+
         report.AppendLine();
         report.Append("Gemalto PKCS#15 application read over PACE. Certificate subjects and data-object contents above show what this CAN-authenticated channel exposes.");
         return new Emrtd.Result(string.Empty, report.ToString());

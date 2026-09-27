@@ -9,6 +9,8 @@ namespace RSAReader;
 internal interface ISecureMessaging
 {
     int TrySelectApplication(byte[] aid);
+    /// <summary>SELECT a disclosed application requesting its FCI.</summary>
+    (int Status, byte[] Fci) TrySelectApplicationWithFci(byte[] aid);
     int TrySelectFile(byte[] fileId);
     /// <summary>SELECT a known EF requesting its FCI. The returned bytes remain local.</summary>
     (int Status, byte[] Fci) TrySelectFileWithFci(byte[] fileId);
