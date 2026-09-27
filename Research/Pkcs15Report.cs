@@ -9,6 +9,8 @@ namespace RSAReader.Research;
 public sealed record FileObservation(string Name, string Fid, int SelectStatus, int Length, string? Error);
 public sealed record MetadataObservation(string Reference, int Status, int Length, string? TagLengths, string? Error,
     string? ControlValues = null);
+public sealed record ApplicationObservation(string Name, string Aid, int SelectStatus, int FciStatus,
+    int FciLength, string? FciTagLengths);
 public sealed record ObjectObservation(string Directory, string Kind, string? Label, string? KeyIdHash,
     string? Path, string? Usage, string? Access, string? AuthReference);
 public sealed record CertificateObservation(string Path, string Fingerprint, string PublicKeyHash,
@@ -25,6 +27,7 @@ public sealed class Pkcs15Report
     public List<FileObservation> Files { get; init; } = [];
     public List<MetadataObservation> SelectionMetadata { get; init; } = [];
     public List<MetadataObservation> BiometricInformation { get; init; } = [];
+    public List<ApplicationObservation> Applications { get; init; } = [];
     public List<ObjectObservation> Objects { get; init; } = [];
     public List<CertificateObservation> Certificates { get; init; } = [];
     public List<string> Findings { get; init; } = [];
@@ -46,6 +49,8 @@ public sealed class Pkcs15Report
         foreach (var f in BiometricInformation)
             b.AppendLine($"Biometric information tag {f.Reference}: GET DATA {f.Status:X4}, {f.Length} bytes, TLV tags/lengths: {f.TagLengths ?? "unavailable"}" +
                 (f.Error is null ? "" : $", {f.Error}"));
+        foreach (var app in Applications)
+            b.AppendLine($"Application {app.Name} ({app.Aid}): SELECT {app.SelectStatus:X4}, FCI request {app.FciStatus:X4}, {app.FciLength} FCI bytes, tags/lengths: {app.FciTagLengths ?? "unavailable"}");
         foreach (var o in Objects) b.AppendLine($"{o.Directory}: {o.Kind}, label={o.Label ?? "?"}, path={o.Path ?? "?"}, key ID SHA-256={o.KeyIdHash ?? "?"}, usage={o.Usage ?? "?"}, access={o.Access ?? "?"}, auth ref={o.AuthReference ?? "?"}");
         foreach (var c in Certificates)
         {
@@ -82,6 +87,14 @@ public sealed class Pkcs15Collector
     }
 
     public void SetApplication(byte[] aid) => Report.ApplicationAid = Convert.ToHexString(aid);
+
+    public void ObserveApplication(string name, byte[] aid, int selectStatus, int fciStatus, byte[] fci)
+    {
+        string? error = null;
+        var tags = DescribeTlv(fci, ref error);
+        Report.Applications.Add(new ApplicationObservation(name, Convert.ToHexString(aid),
+            selectStatus, fciStatus, fci.Length, tags));
+    }
 
     public void ObserveFci(byte[] fid, int status, byte[] fci, string? error = null)
     {
