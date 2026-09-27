@@ -24,10 +24,12 @@ internal static class ChipEnumeration
             var reads = new List<ReadObservation>();
             var initialStatus = 0xFFFF;
             var terminalStatus = 0xFFFF;
+            int? declaredSize = null;
             var completion = "Incomplete: command limit reached";
             try
             {
-                while (body.Count < SignatureCap && reads.Count < 512)
+                var stopped = false;
+                while (!stopped && body.Count < SignatureCap && reads.Count < 512)
                 {
                     var requested = Math.Min(0xC0, SignatureCap - body.Count);
                     while (true)
@@ -44,8 +46,11 @@ internal static class ChipEnumeration
                             throw new EmrtdException("READ BINARY exceeded requested length.");
                         if (sw is not (0x9000 or 0x6282))
                         {
-                            completion = $"Incomplete: stopped at {sw:X4}; file size unknown";
-                            goto Finished;
+                            completion = body.Count == 0
+                                ? $"No data: {sw:X4} ({DescribeStatus(sw)})"
+                                : $"Denied/stopped at {sw:X4} after {body.Count} bytes; file larger than capture";
+                            stopped = true;
+                            break;
                         }
                         if (part.Length == 0)
                         {
@@ -54,10 +59,11 @@ internal static class ChipEnumeration
                                 requested = Math.Max(1, requested / 2);
                                 continue;
                             }
-                            completion = requested == 1
-                                ? $"Read boundary at offset {body.Count}, one-byte request returned {sw:X4}; file size unconfirmed"
-                                : "Incomplete: command limit reached";
-                            goto Finished;
+                            // A one-byte request returning no data is the true end of file.
+                            completion = $"Complete: whole file read, {body.Count} bytes (EOF confirmed)";
+                            declaredSize = body.Count;
+                            stopped = true;
+                            break;
                         }
                         body.AddRange(part);
                         // A short response or recovered smaller request may leave
@@ -65,23 +71,51 @@ internal static class ChipEnumeration
                         break;
                     }
                 }
-                if (body.Count >= SignatureCap)
-                    completion = "Incomplete: 4 KiB capture limit reached";
-            Finished:
-                collector.ObserveShortEf(sfi, initialStatus, null, body.ToArray(), completion,
+                if (!stopped && body.Count >= SignatureCap)
+                {
+                    // Hit the 4 KiB capture cap: the file is larger. Establish its exact
+                    // size cheaply with a bounded one-byte binary search for EOF.
+                    var exact = DetermineExactSize(sm, body.Count);
+                    declaredSize = exact;
+                    completion = exact is int n
+                        ? $"Truncated at 4 KiB capture cap; holds first {body.Count} of {n} bytes"
+                        : $"Truncated at 4 KiB capture cap; full size exceeds probe range";
+                }
+                collector.ObserveShortEf(sfi, initialStatus, declaredSize, body.ToArray(), completion,
                     context, terminalStatus, reads);
                 var signatures = ImageScan.Scan(body.ToArray());
-                report.AppendLine($"• SFI {sfi:X2}: initial {initialStatus:X4}, terminal {terminalStatus:X4}, {body.Count} bytes hidden; {completion}" +
+                report.AppendLine($"• SFI {sfi:X2}: initial {initialStatus:X4}, terminal {terminalStatus:X4}, {body.Count} bytes hidden" +
+                    (declaredSize is int size ? $", size {size}" : "") + $"; {completion}" +
                     (signatures.Count == 0 ? "" : $"; {string.Join(", ", signatures)}"));
             }
             catch (EmrtdException ex)
             {
-                collector.ObserveShortEf(sfi, initialStatus, null, body.ToArray(),
+                collector.ObserveShortEf(sfi, initialStatus, declaredSize, body.ToArray(),
                     $"Incomplete: session failed: {ex.Message}", context, null, reads);
                 report.AppendLine($"• SFI {sfi:X2}: session failed: {ex.Message}");
                 throw; // MAC/transport failures invalidate the session; do not keep probing.
             }
         }
+    }
+
+    // Binary-search the exact file size once a capped capture proves the file is larger
+    // than the capture cap. Read-only: one-byte READ BINARYs locate the first offset
+    // that returns no data (that offset is the size). Returns null if the size exceeds
+    // the addressable probe range.
+    private static int? DetermineExactSize(ISecureMessaging sm, int lowerBound)
+    {
+        const int maxOffset = 0x7FFF; // ReadAt addresses offsets below 0x8000
+        int lo = lowerBound, hi = maxOffset, firstEmpty = -1;
+        while (lo <= hi)
+        {
+            var mid = lo + (hi - lo) / 2;
+            int length;
+            try { length = sm.ReadAt(mid, 1).Data.Length; }
+            catch (ArgumentOutOfRangeException) { hi = mid - 1; continue; }
+            if (length == 1) lo = mid + 1;          // data present: size is beyond mid
+            else { firstEmpty = mid; hi = mid - 1; } // no data: size is at or below mid
+        }
+        return firstEmpty >= 0 ? firstEmpty : null;
     }
 
     // EF.CardSecurity (FID 011D under the MF, short EF id 1D). If present it is a CMS

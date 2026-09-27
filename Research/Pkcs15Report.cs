@@ -20,7 +20,13 @@ public sealed record ObjectObservation(string Directory, string Kind, string? La
     string? Path, string? Usage, string? Access, string? AuthReference);
 public sealed record ShortEfObservation(int Sfi, int SelectStatus, int? DeclaredSize, int BytesRead,
     string? TlvTags, List<string> Signatures, string Completion,
-    string? Context = null, int? TerminalStatus = null, List<ReadObservation>? Reads = null, string? ParseError = null);
+    string? Context = null, int? TerminalStatus = null, List<ReadObservation>? Reads = null, string? ParseError = null)
+{
+    // Set during Analyze() once every short EF has been captured: whether this SFI's
+    // content is identical to (or a prefix of) an already-mapped file, a duplicate of
+    // another SFI, padding only, or genuinely new/unmapped content.
+    public string? IdentityMatch { get; set; }
+}
 public sealed record SecurityInfoObservation(string Source, string Oid, string Name, string? Detail);
 public sealed record DiscoveredAidObservation(string RequestedPrefix, string? DiscoveredDfName,
     int SelectStatus, int FciLength, string? FciTagLengths, string Occurrence);
@@ -73,6 +79,7 @@ public sealed class Pkcs15Report
             b.AppendLine($"SecurityInfo [{s.Source}]: {s.Name} ({s.Oid})" + (s.Detail is null ? "" : $"; {s.Detail}"));
         foreach (var e in ShortEfs)
             b.AppendLine($"Short EF [{e.Context ?? "unspecified context"}] {e.Sfi} (SFI {e.Sfi:X2}): initial READ {(e.SelectStatus == 0xFFFF ? "FAILED" : e.SelectStatus.ToString("X4"))}, declared {e.DeclaredSize?.ToString() ?? "?"}, {e.BytesRead} bytes read; terminal {e.TerminalStatus?.ToString("X4") ?? "unavailable"}; {e.Completion}" +
+                (e.IdentityMatch is null ? "" : $"; identity: {e.IdentityMatch}") +
                 (e.TlvTags is null ? "" : $"; TLV tags/lengths: {e.TlvTags}") +
                 (e.ParseError is null ? "" : $"; TLV parse: {e.ParseError}") +
                 (e.Signatures.Count == 0 ? "" : $"; signatures: {string.Join(", ", e.Signatures)}"));
@@ -106,6 +113,8 @@ public sealed class Pkcs15Report
 public sealed class Pkcs15Collector
 {
     private readonly Dictionary<string, byte[]> _raw = [];
+    // Raw short-EF captures kept locally for content classification in Analyze().
+    private readonly List<(int Sfi, string Context, byte[] Bytes, ShortEfObservation Obs)> _shortEfCaptures = [];
     public Pkcs15Report Report { get; } = new();
 
     public void Observe(string name, byte[] fid, int status, byte[] data, string? error = null)
@@ -204,9 +213,67 @@ public sealed class Pkcs15Collector
         // Content bytes stay local. Only the TLV shape and signature offsets are exported.
         string? error = null;
         var tags = DescribeTlv(body, ref error);
-        Report.ShortEfs.Add(new ShortEfObservation(sfi, status, declaredSize, body.Length, tags,
-            ImageScan.Scan(body), completion, context, terminalStatus, reads, error));
+        var obs = new ShortEfObservation(sfi, status, declaredSize, body.Length, tags,
+            ImageScan.Scan(body), completion, context, terminalStatus, reads, error);
+        Report.ShortEfs.Add(obs);
+        if (body.Length > 0) _shortEfCaptures.Add((sfi, context ?? "unspecified", body.ToArray(), obs));
     }
+
+    // Classify each short-EF capture by content so complete reads of already-mapped
+    // files are not mislabelled and genuinely new data is called out separately from
+    // duplicates and padding. Runs after every EF has been captured. Content stays
+    // local; only the identity verdict and a per-context summary are exported.
+    private void ClassifyShortEfs()
+    {
+        if (_shortEfCaptures.Count == 0) return;
+        var known = _raw.Where(kv => kv.Value.Length > 0).ToList();
+        var seen = new List<(int Sfi, string Context, byte[] Bytes)>();
+        var rows = new List<(string Context, string Category, int Sfi)>();
+        foreach (var cap in _shortEfCaptures)
+        {
+            string category, verdict;
+            if (cap.Bytes.All(b => b is 0x00 or 0xFF))
+            {
+                (category, verdict) = ("padding-only", "padding only (no content)");
+            }
+            else if (known.FirstOrDefault(k => IsSameOrPrefix(cap.Bytes, k.Value)) is { Value: not null } match)
+            {
+                category = "known-EF";
+                verdict = cap.Bytes.Length == match.Value.Length
+                    ? $"identical to already-mapped EF {match.Key}"
+                    : $"prefix of already-mapped EF {match.Key} (first {cap.Bytes.Length} bytes)";
+            }
+            else if (seen.FirstOrDefault(s => s.Bytes.Length == cap.Bytes.Length && s.Bytes.SequenceEqual(cap.Bytes)) is { Bytes: not null } dup)
+            {
+                (category, verdict) = ("duplicate", $"duplicate of SFI {dup.Sfi:X2} [{dup.Context}]");
+            }
+            else
+            {
+                (category, verdict) = ("distinct", "distinct / not matched to any mapped file");
+            }
+            cap.Obs.IdentityMatch = verdict;
+            rows.Add((cap.Context, category, cap.Sfi));
+            seen.Add((cap.Sfi, cap.Context, cap.Bytes));
+        }
+        foreach (var group in rows.GroupBy(r => r.Context))
+        {
+            string List(string category)
+            {
+                var hits = group.Where(r => r.Category == category).Select(r => $"{r.Sfi:X2}").ToList();
+                return hits.Count == 0 ? "none" : string.Join(", ", hits);
+            }
+            Report.Findings.Add($"Short-EF classification ({group.Key}): genuinely new/unmapped SFIs [{List("distinct")}]; " +
+                $"identical or prefix of mapped EFs [{List("known-EF")}]; duplicate SFIs [{List("duplicate")}]; padding-only SFIs [{List("padding-only")}].");
+        }
+        if (rows.Any(r => r.Category == "distinct"))
+            Report.Findings.Add("Access rules for genuinely new SFIs were not retrieved: short-EF addressing selects a file without exposing its file identifier, so no FCI/SELECT could be issued for those entries. Their access conditions remain unknown; a matched SFI inherits the access rule already recorded for its file identifier.");
+    }
+
+    // True when candidate is exactly, or a leading prefix of, reference. A capped SFI
+    // capture is a prefix of the full file read under its file identifier.
+    private static bool IsSameOrPrefix(byte[] candidate, byte[] reference) =>
+        candidate.Length > 0 && reference.Length >= candidate.Length &&
+        reference.AsSpan(0, candidate.Length).SequenceEqual(candidate);
 
     public void ObserveDiscoveredAid(byte[] requestedPrefix, int selectStatus, byte[] fci, string occurrence)
     {
@@ -261,6 +328,7 @@ public sealed class Pkcs15Collector
                 Report.Findings.Add($"{key.Kind} and a certificate directory entry share a PKCS#15 key ID. This links records, but does not compare their public-key bytes.");
         }
         if (Report.Objects.Any(x => x.Directory == "5002")) Report.Findings.Add("PuKDF directory entries identify public keys, but their key material has not been read; certificate-to-PuKDF equality is unverified.");
+        ClassifyShortEfs();
         return Report;
     }
 

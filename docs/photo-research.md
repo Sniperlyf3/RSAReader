@@ -46,8 +46,31 @@ from cards that reject a request extending beyond the file.
 
 Each capture exports its DF context, initial and terminal status, and individual
 read offsets, requested lengths, statuses and returned lengths. A one-byte empty
-response establishes an observed read boundary only; the file size remains
-unconfirmed. Other errors and the 4 KiB / 512-command limits are explicitly
+response after the last data byte confirms end of file, so the capture is reported
+as **Complete** with the confirmed byte size — no longer as an "incomplete" read.
+A file larger than the 4 KiB capture cap is reported as **Truncated**, and its exact
+size is then found with a bounded one-byte binary search for the first unreadable
+offset. A denial or other error mid-stream, or the 512-command limit, is still
 reported as incomplete. TLV parse failures are retained as metadata, without
 exporting content. Failed context selection skips that sweep, and session
 failures stop probing. No card content from diagnostic traces is stored in source.
+
+### Content classification of short EFs
+
+Once every short EF has been captured, each is classified against the files already
+mapped by file identifier and against the other SFIs, using local content only:
+
+- **identical to** / **prefix of** an already-mapped EF — the SFI is another route to
+  a file we already read, so a complete read is not mislabelled as new or incomplete;
+- **duplicate of** another SFI — the same content reached through two short identifiers;
+- **padding-only** — the capture is entirely `00`/`FF`;
+- **genuinely new / unmapped** — content that matches no mapped file and no other SFI.
+
+A consolidated finding lists these four groups per context, so genuinely new data
+(for example an application SFI that maps to no known file) is separated from
+duplicate directories and padding. The verdict is exported; the bytes are not.
+Access rules for a genuinely new SFI cannot be retrieved, because short-EF addressing
+selects a file without exposing its file identifier and therefore no `SELECT`/FCI can
+be issued for it; a matched SFI inherits the access rule already recorded for its
+file identifier. Establishing those rules would require discovering the file
+identifier through another route.
