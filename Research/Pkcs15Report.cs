@@ -141,6 +141,10 @@ public sealed class Pkcs15Collector
                 string? authReference = null;
                 if (kind == "Authentication object")
                     (usage, access, authReference) = DescribeAuthentication(outer);
+                if (objectKind == "PIN authentication object" &&
+                    access?.Contains("unblocking-PIN", StringComparison.Ordinal) == true &&
+                    access.Contains("SO-PIN", StringComparison.Ordinal))
+                    Report.Findings.Add("A PIN record sets both unblocking-PIN and SO-PIN flags. PKCS#15 v1.1 disallows that combination; retain the raw flag interpretation but do not infer a supported operation from it.");
                 Report.Objects.Add(new ObjectObservation(fid, objectKind, label, idHash,
                     path is null ? null : Convert.ToHexString(path), usage, access, authReference));
             }
@@ -203,7 +207,10 @@ public sealed class Pkcs15Collector
             var bioType = attrs.Child(0x30)?.Children.Where(x => x.Tag == 0x0A)
                 .Select(x => PositiveInteger(x.Value)).ToArray() ?? [];
             var reference = attrs.Child(0x02) is { } bioRef ? $"biometric reference {PositiveInteger(bioRef.Value)}" : null;
-            return ($"template OID {oid}; type {string.Join("/", bioType)}", flags is null ? null : BitNames(flags,
+            var typeDescription = bioType is [0, 0] ? "left thumb fingerprint (0/0)" :
+                bioType is [1, 0] ? "right thumb fingerprint (1/0)" :
+                $"type {string.Join("/", bioType)}";
+            return ($"template OID {oid}; {typeDescription}", flags is null ? null : BitNames(flags,
                 ["reserved", "local", "change-disabled", "unblock-disabled", "initialized", "reserved", "reserved", "reserved", "disable-allowed", "integrity-protected", "confidentiality-protected"]), reference);
         }
         return (null, null, null);
