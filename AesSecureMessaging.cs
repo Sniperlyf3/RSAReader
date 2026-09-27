@@ -39,6 +39,12 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         return (status, fci);
     }
 
+    public (int Status, byte[] Data) TryGetData(byte p1, byte p2)
+    {
+        var (status, data) = SendRaw(new byte[] { 0x0C, 0xCA, p1, p2 }, null, true);
+        return (status, data);
+    }
+
     public void SelectApplication(byte[] aid) => Ensure(TrySelectApplication(aid));
 
     public void SelectFile(byte[] fileId) => Ensure(TrySelectFile(fileId));

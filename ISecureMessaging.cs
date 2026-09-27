@@ -12,6 +12,8 @@ internal interface ISecureMessaging
     int TrySelectFile(byte[] fileId);
     /// <summary>SELECT a known EF requesting its FCI. The returned bytes remain local.</summary>
     (int Status, byte[] Fci) TrySelectFileWithFci(byte[] fileId);
+    /// <summary>GET DATA for a named two-byte BER tag, without changing card data.</summary>
+    (int Status, byte[] Data) TryGetData(byte p1, byte p2);
     void SelectApplication(byte[] aid);
     void SelectFile(byte[] fileId);
 

@@ -305,6 +305,30 @@ public sealed class Pace
             }
         }
 
+        // ISO/IEC 7816-11 names 7F61 as the BIT group template and 7F60 as
+        // an individual BIT. A BIT may include biometric reference data, so
+        // only tag names and lengths enter the redacted report.
+        if (_collector is not null && sm.TrySelectApplication(aid) == 0x9000)
+        {
+            report.AppendLine();
+            report.AppendLine("Biometric information metadata (values hidden):");
+            foreach (var tag in new[] { new byte[] { 0x7F, 0x61 }, new byte[] { 0x7F, 0x60 } })
+            {
+                try
+                {
+                    var (status, data) = sm.TryGetData(tag[0], tag[1]);
+                    _collector.ObserveBiometricInformation(tag, status, data);
+                    report.AppendLine($"• GET DATA {Hex(tag)}: {status:X4}, {data.Length} bytes hidden");
+                }
+                catch (EmrtdException ex)
+                {
+                    _collector.ObserveBiometricInformation(tag, 0xFFFF, [], ex.Message);
+                    report.AppendLine($"• GET DATA {Hex(tag)}: failed: {ex.Message}");
+                    break;
+                }
+            }
+        }
+
         // Ask for FCI on files already named by the application. This is a
         // read-only metadata query; no unknown FIDs, PINs, or biometrics are tried.
         if (_collector is not null)
