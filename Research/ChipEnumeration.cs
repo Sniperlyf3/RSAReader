@@ -13,7 +13,7 @@ internal static class ChipEnumeration
 
     // Sweep short file identifiers 1-30 in the current DF context. A READ BINARY with
     // the SFI in P1 selects and reads the EF in one command; 6A82 means no such file,
-    // 6982 means it exists but is protected in this session.
+    // 6982 indicates an unsatisfied security status, not proof that an EF exists.
     public static void SweepShortEfs(ISecureMessaging sm, Pkcs15Collector collector, string context, StringBuilder report)
     {
         report.AppendLine();
@@ -27,8 +27,8 @@ internal static class ChipEnumeration
                 {
                     if (status == 0x6982)
                     {
-                        collector.ObserveShortEf(sfi, status, null, [], "File exists but is protected");
-                        report.AppendLine($"• SFI {sfi:X2}: {status:X4} ({DescribeStatus(status)}) — file present, read denied");
+                        collector.ObserveShortEf(sfi, status, null, [], "Security status not satisfied; file presence unconfirmed");
+                        report.AppendLine($"• SFI {sfi:X2}: {status:X4} ({DescribeStatus(status)}) — security status not satisfied; presence unconfirmed");
                     }
                     else
                     {
@@ -113,7 +113,7 @@ internal static class ChipEnumeration
         var certs = SecurityInfoDecoder.ExtractSignedDataCertificates(body);
         report.AppendLine($"  Embedded SignedData certificates: {certs.Count}");
         foreach (var der in certs) collector.ObserveEmbeddedCertificate("EF.CardSecurity signer", der);
-        collector.Report.Findings.Add("EF.CardSecurity is present. Its signer chain and any Chip Authentication key are recorded; a valid CA chain and revocation evidence are still required for trust.");
+        collector.Report.Findings.Add(eContent is not null ? "EF.CardSecurity CMS content was decoded but its signature, issuer chain and revocation status remain unverified." : "EF.CardSecurity returned bytes, but CMS SignedData content was not decoded; authenticity and even file format remain unverified.");
     }
 
     // Enumerate applets by partial DF name. SELECT P1=04, P2=00 returns the first
