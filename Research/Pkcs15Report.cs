@@ -83,7 +83,10 @@ public sealed class Pkcs15Collector
             if (_raw.TryGetValue(file.Fid, out var der)) InspectCertificate(file.Fid, der);
         var privateFile = Report.Files.FirstOrDefault(x => x.Fid == "5001");
         if (privateFile?.SelectStatus == 0xFFFF) Report.Findings.Add("PrKDF was selected, but reading failed. Its contents and capabilities remain unknown.");
-        if (privateFile is { Length: 0 }) Report.Findings.Add("PrKDF returned no bytes. A read error or access rule may explain this; private-key absence is unproven.");
+        if (privateFile is { Length: 0 })
+            Report.Findings.Add(Report.Findings.Any(x => x.Contains("PrKDF one-byte READ BINARY returned 6982", StringComparison.Ordinal))
+                ? "PrKDF READ BINARY reported security condition not satisfied in this PACE/CAN session. Its contents and private-key capabilities remain unknown."
+                : "PrKDF returned no bytes. A read error or access rule may explain this; private-key absence is unproven.");
         if (Report.Certificates.Count > 0) Report.Findings.Add("A certificate on the chip does not establish issuer trust without an authenticated CA chain and revocation evidence.");
         foreach (var key in Report.Objects.Where(x => x.Directory == "5002" && x.KeyIdHash is not null))
         {
@@ -104,9 +107,17 @@ public sealed class Pkcs15Collector
                 // PKCS#15 uses an IMPLICIT [0] CHOICE arm for EC keys. Its A0
                 // value contains the PKCS15Object fields directly (common,
                 // class, type), with no extra SEQUENCE around them.
-                var record = outer.Tag is 0x30 or 0xA0 ? outer : null;
+                var record = outer.Tag is 0x30 or 0xA0 ||
+                    (kind == "Authentication object" && (outer.Tag == 0xA1 || outer.Tag == 0xA2)) ? outer : null;
                 if (record is null) continue;
-                var objectKind = kind.Contains("key", StringComparison.OrdinalIgnoreCase)
+                var objectKind = kind == "Authentication object" ? outer.Tag switch
+                {
+                    0x30 => "PIN authentication object",
+                    0xA0 => "Biometric template authentication object",
+                    0xA1 => "Authentication key object",
+                    0xA2 => "External authentication object",
+                    _ => "Authentication object"
+                } : kind.Contains("key", StringComparison.OrdinalIgnoreCase)
                     ? kind + (outer.Tag == 0xA0 ? " (EC)" : " (RSA)") : kind;
                 var common = record.Children.FirstOrDefault();
                 var classAttrs = record.Children.Skip(1).FirstOrDefault();
@@ -121,14 +132,17 @@ public sealed class Pkcs15Collector
                     .Where(x => x.Length is 2 or 4 or 6 && x[0] is 0x3F or 0x50 or 0xB0 or 0xB1)
                     .LastOrDefault();
                 var bits = classAttrs?.Children.Where(x => x.Tag == 0x03).Select(x => x.Value).ToList() ?? [];
-                var usage = kind.Contains("key", StringComparison.OrdinalIgnoreCase) && bits.Count > 0
+                string? usage = kind.Contains("key", StringComparison.OrdinalIgnoreCase) && bits.Count > 0
                     ? BitNames(bits[0], ["encrypt", "decrypt", "sign", "signRecover", "wrap", "unwrap", "verify", "verifyRecover", "derive", "nonRepudiation"])
                     : null;
-                var access = kind == "Private key" && bits.Count > 1
+                string? access = kind == "Private key" && bits.Count > 1
                     ? BitNames(bits[1], ["sensitive", "extractable", "alwaysSensitive", "neverExtractable", "local"])
                     : null;
+                string? authReference = null;
+                if (kind == "Authentication object")
+                    (usage, access, authReference) = DescribeAuthentication(outer);
                 Report.Objects.Add(new ObjectObservation(fid, objectKind, label, idHash,
-                    path is null ? null : Convert.ToHexString(path), usage, access, null));
+                    path is null ? null : Convert.ToHexString(path), usage, access, authReference));
             }
         }
         catch (FormatException ex) { Report.Findings.Add($"{kind} directory {fid} could not be decoded: {ex.Message}"); }
@@ -164,6 +178,44 @@ public sealed class Pkcs15Collector
     }
 
     private static string Hash(byte[] value) => Convert.ToHexString(SHA256.HashData(value));
+    private static (string? Usage, string? Flags, string? Reference) DescribeAuthentication(Asn1Node outer)
+    {
+        var attrs = outer.Child(0xA1)?.Child(0x30);
+        if (attrs is null) return (null, null, null);
+        var flags = attrs.Child(0x03)?.Value;
+        if (outer.Tag == 0x30) // PinAttributes
+        {
+            var pinType = attrs.Child(0x0A)?.Value;
+            var type = (pinType is { Length: > 0 } ? pinType[^1] : -1) switch
+            {
+                0 => "BCD", 1 => "ASCII numeric", 2 => "UTF-8", 3 => "half-nibble BCD", 4 => "ISO 9564-1", _ => "unknown"
+            };
+            var lengths = attrs.Children.Where(x => x.Tag == 0x02).Select(x => PositiveInteger(x.Value)).ToList();
+            var description = $"{type} PIN" + (lengths.Count >= 2 ? $"; minimum {lengths[0]}, stored {lengths[1]} bytes" : "") +
+                (lengths.Count >= 3 ? $", maximum {lengths[2]}" : "");
+            var reference = attrs.Child(0x80) is { } pinRef ? $"PIN reference {PositiveInteger(pinRef.Value)}" : null;
+            return (description, flags is null ? null : BitNames(flags,
+                ["case-sensitive", "local", "change-disabled", "unblock-disabled", "initialized", "needs-padding", "unblocking-PIN", "SO-PIN", "disable-allowed", "integrity-protected", "confidentiality-protected", "exchange-ref-data"]), reference);
+        }
+        if (outer.Tag == 0xA0) // BiometricAttributes; metadata only
+        {
+            var oid = attrs.Child(0x06) is { } templateId ? Asn1Tree.Oid(templateId.Value) : "unknown";
+            var bioType = attrs.Child(0x30)?.Children.Where(x => x.Tag == 0x0A)
+                .Select(x => PositiveInteger(x.Value)).ToArray() ?? [];
+            var reference = attrs.Child(0x02) is { } bioRef ? $"biometric reference {PositiveInteger(bioRef.Value)}" : null;
+            return ($"template OID {oid}; type {string.Join("/", bioType)}", flags is null ? null : BitNames(flags,
+                ["reserved", "local", "change-disabled", "unblock-disabled", "initialized", "reserved", "reserved", "reserved", "disable-allowed", "integrity-protected", "confidentiality-protected"]), reference);
+        }
+        return (null, null, null);
+    }
+
+    private static int PositiveInteger(byte[] bytes)
+    {
+        if (bytes.Length is < 1 or > 4 || (bytes[0] & 0x80) != 0) return -1;
+        var value = 0;
+        foreach (var b in bytes) value = (value << 8) | b;
+        return value;
+    }
     private static string SafeLabel(string value) => value is
         "Label ELC Keyset 1" or "Label RSA Keyset 1" or "Default Key Container" or "User PIN" or "SO PIN" or "Sample"
         ? value : "[redacted label]";
