@@ -6,6 +6,11 @@ using System.Text.Json.Serialization;
 
 namespace RSAReader.Research;
 
+public sealed record ReadObservation(int Offset, int Requested, int Status, int Returned);
+public sealed record FileAuditObservation(string Path, int SelectStatus, int? DeclaredSize,
+    int ParsedPrefixLength, int BytesRead, int TailNonPaddingBytes, string Completion,
+    List<ReadObservation> Reads, List<string> Signatures);
+
 public sealed record FileObservation(string Name, string Fid, int SelectStatus, int Length, string? Error);
 public sealed record MetadataObservation(string Reference, int Status, int Length, string? TagLengths, string? Error,
     string? ControlValues = null, string? AccessRule = null);
@@ -24,6 +29,7 @@ public sealed class Pkcs15Report
 {
     public int SchemaVersion { get; init; } = 1;
     public string ApplicationAid { get; set; } = "";
+    public List<FileAuditObservation> FileAudits { get; init; } = [];
     public List<FileObservation> Files { get; init; } = [];
     public List<MetadataObservation> SelectionMetadata { get; init; } = [];
     public List<MetadataObservation> BiometricInformation { get; init; } = [];
@@ -42,6 +48,8 @@ public sealed class Pkcs15Report
         b.AppendLine($"PKCS#15 AID: {ApplicationAid}");
         foreach (var f in Files) b.AppendLine($"{f.Name} ({f.Fid}): {(f.SelectStatus == 0xFFFF ? "SELECT 9000; READ FAILED" : $"SELECT {f.SelectStatus:X4}")}, {f.Length} bytes" +
             (f.Error is null ? "" : $", read error: {f.Error}"));
+        foreach (var a in FileAudits)
+            b.AppendLine($"Audit {a.Path}: {a.BytesRead}/{a.DeclaredSize} bytes, parsed prefix {a.ParsedPrefixLength}, tail nonpadding {a.TailNonPaddingBytes}; {a.Completion}; {string.Join(", ", a.Signatures)}");
         foreach (var f in SelectionMetadata)
             b.AppendLine($"FCI {f.Reference}: SELECT {f.Status:X4}, {f.Length} bytes, TLV tags/lengths: {f.TagLengths ?? "unavailable"}" +
                 (f.ControlValues is null ? "" : $", file controls: {f.ControlValues}") +

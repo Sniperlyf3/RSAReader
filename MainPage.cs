@@ -71,6 +71,41 @@ public sealed class MainPage : ContentPage
         Placeholder = "Raw APDU log (TX/RX hex) appears here after a read."
     };
     private Pkcs15Report? _researchReport;
+    private readonly Switch _includePlain = new();
+    private readonly Picker _candidate = new() { Title = "One application per fresh tap", ItemsSource = new[] {
+        "GemP15 (control)", "ICAO LDS1", "NDEF", "PIV", "PKCS#15 standard" }, SelectedIndex = 0 };
+    private static readonly string[] CandidateAids = ["E828BD080F0147656D20503135", "A0000002471001",
+        "D2760000850101", "A000000308000010000100", "A000000063504B43532D3135"];
+    private readonly Entry _customAid = new() { Placeholder = "Optional researched AID (hex, 5–16 bytes)", MaxLength = 32 };
+    private string _rawDiagnostic = "";
+    private bool _freshCard;
+    private static string TraceDirectory => Path.Combine(FileSystem.CacheDirectory, "research-traces");
+
+    private static void ClearTraceFiles()
+    {
+        try { if (Directory.Exists(TraceDirectory)) Directory.Delete(TraceDirectory, true); }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
+
+    private async Task ExportRawAsync(bool copy)
+    {
+        if (string.IsNullOrEmpty(_rawDiagnostic))
+        { await DisplayAlert("No trace", "Run a PACE scan first.", "OK"); return; }
+        try
+        {
+            if (copy) await Clipboard.Default.SetTextAsync(_rawDiagnostic);
+            else
+            {
+                Directory.CreateDirectory(TraceDirectory);
+                var path = Path.Combine(TraceDirectory, "rsareader-sensitive-trace.txt");
+                await File.WriteAllTextAsync(path, _rawDiagnostic);
+                await Share.Default.RequestAsync(new ShareFileRequest("Sensitive NFC research trace", new ShareFile(path, "text/plain")));
+            }
+            _status.Text = copy ? "Raw trace copied. It may contain identity data." : "Raw trace shared. Clear displayed information removes the local export.";
+        }
+        catch (Exception ex) { await DisplayAlert("Export failed", ex.Message, "OK"); }
+    }
 
 #if ANDROID
     private NfcAdapter? _adapter;
@@ -93,6 +128,7 @@ public sealed class MainPage : ContentPage
     public MainPage()
     {
         Title = "RSAReader";
+        ClearTraceFiles();
 #if ANDROID
         _reader = new CardReader(this);
 #endif
@@ -105,13 +141,28 @@ public sealed class MainPage : ContentPage
         readChip.Clicked += async (_, _) => await ReadChipAsync(readChip);
         var readChipPace = new Button { Text = "Read chip data (PACE / CAN)" };
         readChipPace.Clicked += async (_, _) => await ReadChipPaceAsync(readChipPace);
+        var isolated = new Button { Text = "Probe selected application (fresh tap)" };
+        isolated.Clicked += async (_, _) => await ReadChipPaceAsync(isolated, true);
+        var copyRaw = new Button { Text = "Copy raw trace (sensitive)" };
+        copyRaw.Clicked += async (_, _) => await ExportRawAsync(true);
+        var shareRaw = new Button { Text = "Share raw trace file (sensitive)" };
+        shareRaw.Clicked += async (_, _) => await ExportRawAsync(false);
         var research = new Button { Text = "Open PKCS#15 research" };
-        research.Clicked += async (_, _) => await Navigation.PushAsync(new ResearchPage(_researchReport));
+        research.Clicked += async (_, _) =>
+        {
+#if ANDROID
+            if (_apduBusy) return;
+#endif
+            await Navigation.PushAsync(new ResearchPage(_researchReport));
+        };
         var decode = new Button { Text = "Decode entered ID number" };
         decode.Clicked += (_, _) => _decoded.Text = IdDecoder.Decode(_idInput.Text ?? "");
         var clear = new Button { Text = "Clear displayed information" };
         clear.Clicked += (_, _) =>
         {
+#if ANDROID
+            if (_apduBusy) return;
+#endif
             _idInput.Text = "";
             _decoded.Text = "Nothing decoded yet.";
             _apduInput.Text = "";
@@ -124,6 +175,9 @@ public sealed class MainPage : ContentPage
             _canInput.Text = "";
             _paceOutput.Text = "No chip read attempted.";
             _paceLog.Text = "";
+            _rawDiagnostic = "";
+            _includePlain.IsToggled = false;
+            ClearTraceFiles();
             _researchReport = null;
             _scan.Text = "Hold a Smart ID against the phone. The app does not save card data.";
             _status.Text = "Ready to scan";
@@ -177,14 +231,21 @@ public sealed class MainPage : ContentPage
                         LineBreakMode = LineBreakMode.WordWrap
                     },
                     _canInput,
+                    new Label { Text = "Include decrypted responses in raw trace (optional, contains personal data). CAN and session keys are not logged." },
+                    _includePlain,
                     readChipPace,
+                    _candidate,
+                    _customAid,
+                    isolated,
                     _paceOutput,
                     new Label
                     {
-                        Text = "Raw APDU log for local troubleshooting. Treat it as sensitive: it includes card identifiers and cryptographic session data. Use the redacted research report for sharing.",
+                        Text = "Raw trace stays in memory until you copy or share it. Decrypted responses can include identity or biometric data. The research report remains redacted. Shared files stay in app cache until Clear or the next app start; copies outside the app remain with the recipient.",
                         LineBreakMode = LineBreakMode.WordWrap
                     },
                     _paceLog,
+                    copyRaw,
+                    shareRaw,
                     research,
                     new Label { Text = "Manual fallback: SA ID number", FontSize = 20, FontAttributes = FontAttributes.Bold },
                     new Label
@@ -341,7 +402,7 @@ public sealed class MainPage : ContentPage
 #endif
     }
 
-    private async Task ReadChipPaceAsync(Button readButton)
+    private async Task ReadChipPaceAsync(Button readButton, bool isolated = false)
     {
 #if ANDROID
         if (_apduBusy) return;
@@ -351,8 +412,33 @@ public sealed class MainPage : ContentPage
             return;
         }
 
+        if (!_freshCard)
+        {
+            _paceOutput.Text = "Remove the card from the phone, then tap it again before this experiment.";
+            return;
+        }
+        var probeAid = isolated ? Convert.FromHexString(CandidateAids[Math.Max(0, _candidate.SelectedIndex)]) : null;
+        if (isolated && !string.IsNullOrWhiteSpace(_customAid.Text))
+        {
+            var value = _customAid.Text.Trim();
+            if (value.Length is < 10 or > 32 || value.Length % 2 != 0 || !value.All(Uri.IsHexDigit))
+            { _paceOutput.Text = "AID must contain 5–16 hexadecimal bytes."; return; }
+            probeAid = Convert.FromHexString(value);
+        }
+        var includePlain = _includePlain.IsToggled;
         var can = _canInput.Text ?? "";
         var log = new StringBuilder();
+        log.AppendLine($"RSAReader trace v2; UTC {DateTime.UtcNow:O}; app {AppInfo.Current.VersionString}/{AppInfo.Current.BuildString}");
+        log.AppendLine($"Experiment: {(isolated ? Convert.ToHexString(probeAid!) : "known-file audit")}; decrypted={includePlain}");
+        log.AppendLine(_scan.Text);
+        var truncated = false;
+        void AppendTrace(string line)
+        {
+            if (truncated) return;
+            if (log.Length + line.Length > 4 * 1024 * 1024)
+            { log.AppendLine("TRACE LIMIT REACHED; remaining events omitted"); truncated = true; return; }
+            log.AppendLine(line);
+        }
         // Wrap the transceiver so every command/response pair is captured as hex.
         Func<byte[], byte[]> logged = command =>
         {
@@ -363,12 +449,12 @@ public sealed class MainPage : ContentPage
             }
             catch (Exception ex)
             {
-                log.AppendLine($"TX {Convert.ToHexString(command)}");
-                log.AppendLine($"RX <error: {ex.GetType().Name}: {ex.Message}>");
+                AppendTrace($"TX {Convert.ToHexString(command)}");
+                AppendTrace($"RX <error: {ex.GetType().Name}: {ex.Message}>");
                 throw;
             }
-            log.AppendLine($"TX {Convert.ToHexString(command)}");
-            log.AppendLine($"RX {Convert.ToHexString(response)}");
+            AppendTrace($"TX {Convert.ToHexString(command)}");
+            AppendTrace($"RX {Convert.ToHexString(response)}");
             return response;
         };
 
@@ -377,11 +463,12 @@ public sealed class MainPage : ContentPage
         _paceOutput.Text = "Authenticating with the chip (PACE)… Keep the card against the phone.";
         _paceLog.Text = "";
         _researchReport = null;
+        _rawDiagnostic = "";
+        ClearTraceFiles();
+        var collector = new Pkcs15Collector();
         try
         {
-            var collector = new Pkcs15Collector();
-            var result = await Task.Run(() => new Pace(logged, collector).ReadDg1WithCan(can));
-            _researchReport = collector.Analyze();
+            var result = await Task.Run(() => new Pace(logged, collector, includePlain ? AppendTrace : null, probeAid).ReadDg1WithCan(can));
             _paceOutput.Text = result.Summary;
         }
         catch (EmrtdException ex)
@@ -394,7 +481,15 @@ public sealed class MainPage : ContentPage
         }
         finally
         {
-            _paceLog.Text = log.ToString();
+            try { _researchReport = collector.Analyze(); }
+            catch (Exception ex)
+            {
+                collector.Report.Findings.Add($"Analysis incomplete: {ex.GetType().Name}");
+                _researchReport = collector.Report;
+            }
+            if (includePlain) AppendTrace($"RESULT {_paceOutput.Text}");
+            _rawDiagnostic = log.ToString();
+            _paceLog.Text = _rawDiagnostic.Length > 24000 ? _rawDiagnostic[..24000] + "\nDisplay shortened; copy/share includes the full captured trace." : _rawDiagnostic;
             _apduBusy = false;
             readButton.IsEnabled = true;
         }
@@ -460,6 +555,7 @@ public sealed class MainPage : ContentPage
     {
         lock (_cardLock)
         {
+            _freshCard = false;
             var isoDep = _isoDep ?? throw new IOException("Scan an ISO-DEP card first.");
             try
             {
@@ -566,8 +662,10 @@ public sealed class MainPage : ContentPage
 
             MainThread.BeginInvokeOnMainThread(() =>
             {
+                if (_page._apduBusy) return;
                 _page.ResetCardSession();
                 lock (_page._cardLock) _page._isoDep = isoDep;
+                _page._freshCard = true;
                 _page._status.Text = "Card detected. APDUs are not sent automatically.";
                 _page._scan.Text = details.ToString();
             });

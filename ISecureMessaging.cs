@@ -8,6 +8,9 @@ namespace RSAReader;
 /// </summary>
 internal interface ISecureMessaging
 {
+    Action<string>? Trace { get; set; }
+    (int Status, byte[] Data) ReadAt(int offset, int length);
+    (int Status, byte[] Fci) TrySelectPath(byte[] path);
     int TrySelectApplication(byte[] aid);
     /// <summary>SELECT a disclosed application requesting its FCI.</summary>
     (int Status, byte[] Fci) TrySelectApplicationWithFci(byte[] aid);

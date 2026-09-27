@@ -29,6 +29,40 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         _ssc = new byte[Block];
     }
 
+    public Action<string>? Trace { get; set; }
+
+    public (int Status, byte[] Data) ReadAt(int offset, int length)
+    {
+        if (offset < 0 || offset >= 0x8000 || length < 1 || length > 0xC0 || offset + length > 0x8000)
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        return SendRaw([0x0C, 0xB0, (byte)(offset >> 8), (byte)offset], null, true, (byte)length);
+    }
+
+    public (int Status, byte[] Fci) TrySelectPath(byte[] path)
+    {
+        if (path.Length < 2 || path.Length % 2 != 0 || path.Length > 16)
+            throw new ArgumentException("Expected a bounded file path.");
+        if (path.Length == 2) return TrySelectFileWithFci(path);
+        var absolute = path[0] == 0x3F && path[1] == 0;
+        var selected = SendRaw([0x0C, 0xA4, (byte)(absolute ? 0x08 : 0x09), 0x00],
+            absolute ? path[2..] : path, true);
+        if (selected.Sw is not (0x6A86 or 0x6D00)) return selected;
+        // Only a rejected selection method triggers the explicit hierarchy fallback.
+        var start = 0;
+        if (absolute)
+        {
+            var root = SendRaw([0x0C, 0xA4, 0x00, 0x0C], [0x3F, 0x00], false);
+            if (root.Sw != 0x9000) return root;
+            start = 2;
+        }
+        for (var i = start; i < path.Length - 2; i += 2)
+        {
+            var directory = SendRaw([0x0C, 0xA4, 0x01, 0x0C], path[i..(i + 2)], false);
+            if (directory.Sw != 0x9000) return directory;
+        }
+        return TrySelectFileWithFci(path[^2..]);
+    }
+
     public int TrySelectApplication(byte[] aid) => SendRaw(new byte[] { 0x0C, 0xA4, 0x04, 0x0C }, aid, false).Sw;
 
     public (int Status, byte[] Fci) TrySelectApplicationWithFci(byte[] aid)
@@ -129,6 +163,7 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         var body = Emrtd.Concat(do87, do97, do8E);
         var apdu = Emrtd.Concat(header, EncodeLength(body.Length), body, new byte[] { 0x00 });
 
+        Trace?.Invoke($"PLAIN TX {Convert.ToHexString(header)} DATA={Convert.ToHexString(commandData ?? [])} Le={(expectResponse ? le.ToString("X2") : "none")}");
         var resp = _transceive(apdu);
         if (resp is null || resp.Length < 2) throw new EmrtdException("No secure-messaging response.");
         var sw = (resp[^2] << 8) | resp[^1];
@@ -136,13 +171,21 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         // Advance the counter for the response too, so it stays aligned even after a
         // non-9000 status (the card increments on every command/response pair).
         _ssc = Increment(_ssc);
-        // 0x9000 = OK; 0x6282 = end of file reached before Le bytes, but data is still returned.
-        if (sw == 0x9000 || sw == 0x6282) return (sw, VerifyAndExtract(resp[..^2]));
-        return (sw, Array.Empty<byte>());
+        if (resp.Length == 2)
+            throw new EmrtdException($"Unprotected response {sw:X4}; end this session and retap.");
+        var plain = VerifyAndExtract(resp[..^2], out var innerStatus);
+        Trace?.Invoke($"PLAIN RX SW={innerStatus:X4} OUTER={sw:X4} DATA={Convert.ToHexString(plain)}");
+        return (innerStatus, plain);
     }
 
-    private byte[] VerifyAndExtract(byte[] respBody)
+    private byte[] VerifyAndExtract(byte[] respBody, out int innerStatus)
     {
+        var nodes = Research.Asn1Tree.Read(respBody);
+        if (nodes.Count is < 2 or > 3 || nodes[^2].Tag != 0x99 || nodes[^2].Value.Length != 2 ||
+            nodes[^1].Tag != 0x8E || nodes[^1].Value.Length != 8 ||
+            (nodes.Count == 3 && (nodes[0].Tag != 0x87 || nodes[0].Value.Length < 2 || nodes[0].Value[0] != 1)))
+            throw new EmrtdException("Malformed protected response.");
+        innerStatus = (nodes[^2].Value[0] << 8) | nodes[^2].Value[1];
         byte[] do87Raw = Array.Empty<byte>();
         byte[] do99 = Array.Empty<byte>();
         byte[] do8E = Array.Empty<byte>();
@@ -176,7 +219,7 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         }
 
         var expected = Cmac(_ksMac, PadBlock(Emrtd.Concat(_ssc, do87Raw, do99)));
-        if (!expected.SequenceEqual(do8E))
+        if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(expected, do8E))
             throw new EmrtdException("Response checksum did not verify (session integrity error).");
 
         if (cryptogram.Length == 0) return Array.Empty<byte>();

@@ -30,11 +30,16 @@ public sealed class Pace
 {
     private readonly Func<byte[], byte[]> _transceive;
     private readonly Pkcs15Collector? _collector;
+    private readonly Action<string>? _trace;
+    private readonly byte[]? _probeAid;
+    private byte[]? _selectedAid;
 
-    public Pace(Func<byte[], byte[]> transceive, Pkcs15Collector? collector = null)
+    public Pace(Func<byte[], byte[]> transceive, Pkcs15Collector? collector = null, Action<string>? trace = null, byte[]? probeAid = null)
     {
         _transceive = transceive;
         _collector = collector;
+        _trace = trace;
+        _probeAid = probeAid;
     }
 
     private enum CipherAlg { Aes, TripleDes }
@@ -204,13 +209,27 @@ public sealed class Pace
             // 3DES PACE reuses the retail-MAC secure messaging with a zero send-sequence counter.
             : new SecureMessaging(_transceive, ksEnc, ksMac, new byte[8]);
 
+        sm.Trace = _trace;
         var report = new StringBuilder();
         report.AppendLine("PACE OK. Card structure probe:");
 
-        // 1. If the card is an ICAO eMRTD, read DG1 directly.
-        var eaid = new byte[] { 0xA0, 0x00, 0x00, 0x02, 0x47, 0x10, 0x01 };
-        if (sm.TrySelectApplication(eaid) == 0x9000 && sm.TrySelectFile(new byte[] { 0x01, 0x01 }) == 0x9000)
-            return Emrtd.BuildResultFromDg1(sm.ReadFile());
+        // One candidate per physical retap/PACE session, before selecting other apps.
+        if (_probeAid is not null)
+        {
+            var baseline = sm.TrySelectPath([0x3F, 0x00, 0x2F, 0x00]);
+            var control = baseline.Status == 0x9000 ? sm.ReadAt(0, 1).Status : baseline.Status;
+            _collector?.Report.Findings.Add($"Before candidate: MF/2F00 SELECT {baseline.Status:X4}, control {control:X4}.");
+            var (status, fci) = sm.TrySelectApplicationWithFci(_probeAid);
+            var selected = status == 0x6A86 ? sm.TrySelectApplication(_probeAid) : status;
+            _collector?.ObserveApplication("Isolated PACE candidate", _probeAid, selected, status, fci);
+            report.AppendLine($"Candidate {Hex(_probeAid)}: SELECT {selected:X4}; FCI {status:X4}.");
+            // A known path read checks whether protected communication survives selection.
+            var after = sm.TrySelectPath([0x3F, 0x00, 0x2F, 0x00]);
+            var afterRead = after.Status == 0x9000 ? sm.ReadAt(0, 1).Status : after.Status;
+            _collector?.Report.Findings.Add($"After candidate: MF/2F00 SELECT {after.Status:X4}, control {afterRead:X4}. A missing path is not proof of a broken session.");
+            report.AppendLine($"After candidate: control SELECT {after.Status:X4}, READ/control {afterRead:X4}. Remove and retap for the next candidate.");
+            return new Emrtd.Result(string.Empty, report.ToString());
+        }
 
         // 2. Otherwise read EF.DIR (application directory; identifiers only, no personal data).
         var (swDir, dir) = TryReadFile(sm, new byte[] { 0x2F, 0x00 });
@@ -228,6 +247,8 @@ public sealed class Pace
         // 3. Select that application and walk its PKCS#15 object directory (ODF).
         var swApp = sm.TrySelectApplication(aid);
         _collector?.SetApplication(aid);
+        if (swApp != 0x9000) throw new EmrtdException($"Application SELECT failed {swApp:X4}.");
+        _selectedAid = aid;
         report.AppendLine($"• SELECT app {Hex(aid)}: {swApp:X4}");
 
         var (swOdf, odf) = TryReadFile(sm, new byte[] { 0x50, 0x31 }); // EF.ODF, reserved FID 5031
@@ -244,9 +265,9 @@ public sealed class Pace
         foreach (var (label, efid) in ParseOdfDirectoryFids(odf))
         {
             var (sw, body) = TryReadFile(sm, efid);
-            _collector?.Observe(label, efid, sw, body);
+            _collector?.Observe(label, efid[^2..], sw, body);
             report.AppendLine($"• {label} ({Hex(efid)}): {ReadStatus(sw)}" + (body.Length > 0 ? $" -> {Hex(body)}" : ""));
-            if (efid is [0x50, 0x01] && sw == 0x9000 && body.Length == 0)
+            if (efid[^2..] is [0x50, 0x01] && sw == 0x9000 && body.Length == 0)
             {
                 var readStatus = sm.ProbeReadByteStatus();
                 report.AppendLine($"  READ BINARY offset 0, Le=1: {readStatus:X4}");
@@ -263,7 +284,7 @@ public sealed class Pace
             report.AppendLine("Data objects:");
             foreach (var (label, fid) in ExtractObjectPaths(dodf))
             {
-                var sw = sm.TrySelectFile(fid);
+                var sw = SelectDiscoveredPath(sm, fid);
                 if (sw != 0x9000)
                 {
                     report.AppendLine($"• {label} ({Hex(fid)}): SELECT {sw:X4}");
@@ -283,7 +304,7 @@ public sealed class Pace
             report.AppendLine("Certificates:");
             foreach (var (label, fid) in ExtractObjectPaths(cdf))
             {
-                var sw = sm.TrySelectFile(fid);
+                var sw = SelectDiscoveredPath(sm, fid);
                 if (sw != 0x9000)
                 {
                     report.AppendLine($"• {label} ({Hex(fid)}): SELECT {sw:X4}");
@@ -325,7 +346,7 @@ public sealed class Pace
                 {
                     _collector.ObserveBiometricInformation(tag, 0xFFFF, [], ex.Message);
                     report.AppendLine($"• GET DATA {Hex(tag)}: failed: {ex.Message}");
-                    break;
+                    throw;
                 }
             }
         }
@@ -336,7 +357,7 @@ public sealed class Pace
         {
             report.AppendLine();
             report.AppendLine("Known-file FCI probe (redacted in research export):");
-            var knownFids = new[] { new byte[] { 0x2F, 0x00 }, new byte[] { 0x50, 0x31 },
+            var knownFids = new[] { new byte[] { 0x3F, 0x00, 0x2F, 0x00 }, new byte[] { 0x50, 0x31 },
                 new byte[] { 0x50, 0x32 } }
                 .Concat(ParseOdfDirectoryFids(odf).Select(x => x.Fid))
                 .Concat(ExtractObjectPaths(cdf).Select(x => x.Fid))
@@ -346,15 +367,25 @@ public sealed class Pace
             {
                 try
                 {
-                    var (status, fci) = sm.TrySelectFileWithFci(fid);
+                    // Restore app context for short/relative paths after absolute MF selection.
+                    if (!(fid.Length > 2 && fid[0] == 0x3F && fid[1] == 0))
+                    {
+                        var restore = sm.TrySelectApplication(aid);
+                        if (restore != 0x9000) throw new EmrtdException($"Application restore failed {restore:X4}.");
+                    }
+                    var (status, fci) = sm.TrySelectPath(fid);
                     _collector.ObserveFci(fid, status, fci);
+                    var prefix = _collector.Report.Files.FirstOrDefault(x => x.Fid == Hex(fid[^2..]))?.Length ?? 0;
+                    var audit = FileAudit.Run(sm, fid, status, fci, prefix);
+                    _collector.Report.FileAudits.Add(audit);
+                    report.AppendLine($"  Audit: {audit.BytesRead}/{audit.DeclaredSize} bytes; {audit.TailNonPaddingBytes} nonpadding bytes beyond parsed prefix; {audit.Completion}");
                     report.AppendLine($"• {Hex(fid)}: {status:X4}, {fci.Length} FCI bytes");
                 }
                 catch (EmrtdException ex)
                 {
                     _collector.ObserveFci(fid, 0xFFFF, [], ex.Message);
                     report.AppendLine($"• {Hex(fid)}: FCI query failed: {ex.Message}");
-                    break; // a transport or secure-messaging failure may invalidate the session
+                    throw; // preserve partial report; never continue an invalid session
                 }
             }
         }
@@ -373,42 +404,11 @@ public sealed class Pace
             {
                 _collector.ObserveFci(aid, 0xFFFF, [], ex.Message);
                 report.AppendLine($"• Application FCI query failed: {ex.Message}");
+                throw;
             }
         }
 
-        // Application selection is transient but can switch card state, so do
-        // it last. These candidates are documented AIDs, not a range scan.
-        if (_collector is not null)
-        {
-            report.AppendLine();
-            report.AppendLine("Application selection under PACE (FCI values hidden):");
-            var candidates = advertisedAids.Select((value, index) => ($"EF.DIR entry {index + 1}", value))
-                .Concat(new (string Name, byte[] Aid)[]
-                {
-                    ("ICAO LDS1", Convert.FromHexString("A0000002471001")),
-                    ("NFC Forum Type 4 NDEF", Convert.FromHexString("D2760000850101")),
-                    ("PIV", Convert.FromHexString("A000000308000010000100")),
-                    ("PKCS#15 standard", Convert.FromHexString("A000000063504B43532D3135"))
-                })
-                .DistinctBy(x => Convert.ToHexString(x.Item2));
-            foreach (var (name, candidateAid) in candidates)
-            {
-                try
-                {
-                    var (fciStatus, fci) = sm.TrySelectApplicationWithFci(candidateAid);
-                    var selectStatus = fciStatus == 0x6A86
-                        ? sm.TrySelectApplication(candidateAid) : fciStatus;
-                    _collector.ObserveApplication(name, candidateAid, selectStatus, fciStatus, fci);
-                    report.AppendLine($"• {name} ({Hex(candidateAid)}): {selectStatus:X4}, FCI {fciStatus:X4}, {fci.Length} bytes hidden");
-                }
-                catch (EmrtdException ex)
-                {
-                    _collector.ObserveApplication(name, candidateAid, 0xFFFF, 0xFFFF, []);
-                    report.AppendLine($"• {name}: selection failed: {ex.Message}");
-                    break;
-                }
-            }
-        }
+        _collector?.Report.Findings.Add("Cross-application candidates require the isolated probe button and a fresh physical retap for each candidate.");
 
         report.AppendLine();
         report.Append("Gemalto PKCS#15 application read over PACE. Certificate subjects and data-object contents above show what this CAN-authenticated channel exposes.");
@@ -424,7 +424,7 @@ public sealed class Pace
             var label = labelBytes is { Length: > 0 } ? System.Text.Encoding.UTF8.GetString(labelBytes) : "cert";
             var path = FindPath(record);
             if (path is { Length: >= 2 })
-                yield return (label, path[^2..]);
+                yield return (label, path);
         }
     }
 
@@ -536,7 +536,7 @@ public sealed class Pace
             var seq = FindTag(val, 0x30) ?? val;
             var octet = FindTag(seq, 0x04);
             if (octet is { Length: >= 2 })
-                yield return (OdfLabel(tag), octet[^2..]);
+                yield return (OdfLabel(tag), octet);
         }
     }
 
@@ -569,20 +569,23 @@ public sealed class Pace
         return null;
     }
 
-    private static (int Sw, byte[] Data) TryReadFile(ISecureMessaging sm, byte[] fid)
+    private int SelectDiscoveredPath(ISecureMessaging sm, byte[] path)
     {
-        var sw = sm.TrySelectFile(fid);
-        if (sw != 0x9000) return (sw, Array.Empty<byte>());
-        // PKCS#15 files are concatenated records, so read to end of file rather than by TLV length.
-        try
+        if (_selectedAid is not null && !(path.Length > 2 && path[0] == 0x3F && path[1] == 0))
         {
-            var data = sm.ReadEntireFile();
-            // A file shorter than the four-byte TLV header is otherwise reported
-            // as empty. Probe PrKDF with exact smaller Le values before concluding.
-            if (data.Length == 0 && fid is [0x50, 0x01]) data = sm.ReadOpaqueFile();
-            return (sw, data);
+            var restored = sm.TrySelectApplication(_selectedAid);
+            if (restored != 0x9000) return restored;
         }
-        catch (EmrtdException) { return (0xFFFF, Array.Empty<byte>()); } // sentinel: SELECT succeeded; READ failed
+        return path.Length == 2 ? sm.TrySelectFile(path) : sm.TrySelectPath(path).Status;
+    }
+
+    private (int Sw, byte[] Data) TryReadFile(ISecureMessaging sm, byte[] fid)
+    {
+        var sw = SelectDiscoveredPath(sm, fid);
+        if (sw != 0x9000) return (sw, Array.Empty<byte>());
+        var data = sm.ReadEntireFile();
+        if (data.Length == 0 && fid[^2..] is [0x50, 0x01]) data = sm.ReadOpaqueFile();
+        return (sw, data);
     }
 
     // ----- key derivation and MAC ---------------------------------------------
