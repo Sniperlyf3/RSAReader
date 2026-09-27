@@ -126,4 +126,33 @@ if (probeBack.DiscoveredAids.Count != 1 || probeBack.DiscoveredAids[0].Discovere
 if (probeBack.SecurityInfos.Count != 2)
     throw new Exception("Security infos did not round-trip in the report.");
 
+// ----- Short-EF content classification -------------------------------------
+var classify = new Pkcs15Collector();
+var knownFile = Convert.FromHexString("0102030405060708");
+classify.Observe("EF.DIR", [0x2F, 0x00], 0x9000, knownFile); // mapped by file identifier
+classify.ObserveShortEf(0x11, 0x9000, 8, knownFile, "Complete", "PKCS#15 application");
+classify.ObserveShortEf(0x12, 0x9000, null, Convert.FromHexString("01020304"), "Truncated", "PKCS#15 application");
+classify.ObserveShortEf(0x13, 0x9000, 3, Convert.FromHexString("FFFFFF"), "Complete", "PKCS#15 application");
+classify.ObserveShortEf(0x14, 0x9000, 4, Convert.FromHexString("AABBCCDD"), "Complete", "PKCS#15 application");
+classify.ObserveShortEf(0x15, 0x9000, 4, Convert.FromHexString("AABBCCDD"), "Complete", "PKCS#15 application");
+var classified = classify.Analyze();
+string? Verdict(int sfi) => classified.ShortEfs.First(e => e.Sfi == sfi).IdentityMatch;
+if (Verdict(0x11) != "identical to already-mapped EF 2F00")
+    throw new Exception($"SFI 11 identity wrong: {Verdict(0x11)}");
+if (Verdict(0x12) != "prefix of already-mapped EF 2F00 (first 4 bytes)")
+    throw new Exception($"SFI 12 identity wrong: {Verdict(0x12)}");
+if (Verdict(0x13) != "padding only (no content)")
+    throw new Exception($"SFI 13 identity wrong: {Verdict(0x13)}");
+if (Verdict(0x14)?.StartsWith("distinct") != true)
+    throw new Exception($"SFI 14 identity wrong: {Verdict(0x14)}");
+if (Verdict(0x15) != "duplicate of SFI 14 [PKCS#15 application]")
+    throw new Exception($"SFI 15 identity wrong: {Verdict(0x15)}");
+if (!classified.Findings.Any(f => f.Contains("genuinely new/unmapped SFIs [14]")))
+    throw new Exception("Classification summary did not isolate the genuinely new SFI.");
+if (!classified.Findings.Any(f => f.Contains("Access rules for genuinely new SFIs were not retrieved")))
+    throw new Exception("Missing access-rule limitation note for unmapped SFIs.");
+// The verdict must survive the redacted export round-trip.
+if (Pkcs15Report.FromJson(classified.ToJson()).ShortEfs.First(e => e.Sfi == 0x14).IdentityMatch?.StartsWith("distinct") != true)
+    throw new Exception("Short-EF identity verdict did not round-trip.");
+
 Console.WriteLine("Research fixture replay and directory decoding passed.");
