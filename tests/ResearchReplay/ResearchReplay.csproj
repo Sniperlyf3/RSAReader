@@ -11,6 +11,7 @@
     <Compile Include="../../Research/OpaqueFileRead.cs" Link="OpaqueFileRead.cs" />
     <Compile Include="../../Research/ImageScan.cs" Link="ImageScan.cs" />
     <Compile Include="../../Research/SecurityInfoDecoder.cs" Link="SecurityInfoDecoder.cs" />
+    <Compile Include="../../Research/LawTrustAnchors.cs" Link="LawTrustAnchors.cs" />
     <None Include="fixtures/*.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
