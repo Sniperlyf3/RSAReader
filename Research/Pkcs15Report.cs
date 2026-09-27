@@ -19,7 +19,8 @@ public sealed record ApplicationObservation(string Name, string Aid, int SelectS
 public sealed record ObjectObservation(string Directory, string Kind, string? Label, string? KeyIdHash,
     string? Path, string? Usage, string? Access, string? AuthReference);
 public sealed record ShortEfObservation(int Sfi, int SelectStatus, int? DeclaredSize, int BytesRead,
-    string? TlvTags, List<string> Signatures, string Completion);
+    string? TlvTags, List<string> Signatures, string Completion,
+    string? Context = null, int? TerminalStatus = null, List<ReadObservation>? Reads = null, string? ParseError = null);
 public sealed record SecurityInfoObservation(string Source, string Oid, string Name, string? Detail);
 public sealed record DiscoveredAidObservation(string RequestedPrefix, string? DiscoveredDfName,
     int SelectStatus, int FciLength, string? FciTagLengths, string Occurrence);
@@ -71,8 +72,9 @@ public sealed class Pkcs15Report
         foreach (var s in SecurityInfos)
             b.AppendLine($"SecurityInfo [{s.Source}]: {s.Name} ({s.Oid})" + (s.Detail is null ? "" : $"; {s.Detail}"));
         foreach (var e in ShortEfs)
-            b.AppendLine($"Short EF {e.Sfi} (SFI {e.Sfi:X2}): READ {(e.SelectStatus == 0xFFFF ? "FAILED" : e.SelectStatus.ToString("X4"))}, declared {e.DeclaredSize?.ToString() ?? "?"}, {e.BytesRead} bytes read; {e.Completion}" +
+            b.AppendLine($"Short EF [{e.Context ?? "unspecified context"}] {e.Sfi} (SFI {e.Sfi:X2}): initial READ {(e.SelectStatus == 0xFFFF ? "FAILED" : e.SelectStatus.ToString("X4"))}, declared {e.DeclaredSize?.ToString() ?? "?"}, {e.BytesRead} bytes read; terminal {e.TerminalStatus?.ToString("X4") ?? "unavailable"}; {e.Completion}" +
                 (e.TlvTags is null ? "" : $"; TLV tags/lengths: {e.TlvTags}") +
+                (e.ParseError is null ? "" : $"; TLV parse: {e.ParseError}") +
                 (e.Signatures.Count == 0 ? "" : $"; signatures: {string.Join(", ", e.Signatures)}"));
         foreach (var a in DiscoveredAids)
             b.AppendLine($"Partial-AID {a.Occurrence} for prefix {a.RequestedPrefix}: SELECT {a.SelectStatus:X4}" +
@@ -196,13 +198,14 @@ public sealed class Pkcs15Collector
     public void ObserveSecurityInfos(IEnumerable<SecurityInfoObservation> infos) =>
         Report.SecurityInfos.AddRange(infos);
 
-    public void ObserveShortEf(int sfi, int status, int? declaredSize, byte[] body, string completion)
+    public void ObserveShortEf(int sfi, int status, int? declaredSize, byte[] body, string completion,
+        string? context = null, int? terminalStatus = null, List<ReadObservation>? reads = null)
     {
         // Content bytes stay local. Only the TLV shape and signature offsets are exported.
         string? error = null;
         var tags = DescribeTlv(body, ref error);
         Report.ShortEfs.Add(new ShortEfObservation(sfi, status, declaredSize, body.Length, tags,
-            ImageScan.Scan(body), completion));
+            ImageScan.Scan(body), completion, context, terminalStatus, reads, error));
     }
 
     public void ObserveDiscoveredAid(byte[] requestedPrefix, int selectStatus, byte[] fci, string occurrence)

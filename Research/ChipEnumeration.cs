@@ -20,42 +20,66 @@ internal static class ChipEnumeration
         report.AppendLine($"Short EF (SFI) sweep — {context} context (values hidden):");
         for (var sfi = 1; sfi <= 30; sfi++)
         {
+            var body = new List<byte>();
+            var reads = new List<ReadObservation>();
+            var initialStatus = 0xFFFF;
+            var terminalStatus = 0xFFFF;
+            var completion = "Incomplete: command limit reached";
             try
             {
-                var (status, first) = sm.ReadShortEf(sfi, 0, 0xC0);
-                if (status is not (0x9000 or 0x6282))
+                while (body.Count < SignatureCap && reads.Count < 512)
                 {
-                    if (status == 0x6982)
+                    var requested = Math.Min(0xC0, SignatureCap - body.Count);
+                    while (true)
                     {
-                        collector.ObserveShortEf(sfi, status, null, [], "Security status not satisfied; file presence unconfirmed");
-                        report.AppendLine($"• SFI {sfi:X2}: {status:X4} ({DescribeStatus(status)}) — security status not satisfied; presence unconfirmed");
+                        // Until data is returned, repeat the SFI selection. An empty
+                        // warning does not establish that the current EF changed.
+                        var (sw, part) = body.Count == 0
+                            ? sm.ReadShortEf(sfi, 0, requested)
+                            : sm.ReadAt(body.Count, requested);
+                        if (reads.Count == 0) initialStatus = sw;
+                        terminalStatus = sw;
+                        reads.Add(new(body.Count, requested, sw, part.Length));
+                        if (part.Length > requested)
+                            throw new EmrtdException("READ BINARY exceeded requested length.");
+                        if (sw is not (0x9000 or 0x6282))
+                        {
+                            completion = $"Incomplete: stopped at {sw:X4}; file size unknown";
+                            goto Finished;
+                        }
+                        if (part.Length == 0)
+                        {
+                            if (requested > 1 && reads.Count < 512)
+                            {
+                                requested = Math.Max(1, requested / 2);
+                                continue;
+                            }
+                            completion = requested == 1
+                                ? $"Read boundary at offset {body.Count}, one-byte request returned {sw:X4}; file size unconfirmed"
+                                : "Incomplete: command limit reached";
+                            goto Finished;
+                        }
+                        body.AddRange(part);
+                        // A short response or recovered smaller request may leave
+                        // readable bytes. Continue from the actual returned length.
+                        break;
                     }
-                    else
-                    {
-                        report.AppendLine($"• SFI {sfi:X2}: {status:X4} ({DescribeStatus(status)})");
-                    }
-                    continue;
                 }
-                var body = new List<byte>(first);
-                var chunk = first;
-                while (chunk.Length == 0xC0 && body.Count < SignatureCap)
-                {
-                    var (sw, part) = sm.ReadAt(body.Count, Math.Min(0xC0, SignatureCap - body.Count));
-                    if (sw is not (0x9000 or 0x6282) || part.Length == 0) break;
-                    body.AddRange(part);
-                    chunk = part;
-                }
-                var completion = body.Count >= SignatureCap ? "Signature-header cap reached" : "End of file or short read";
-                var bytes = body.ToArray();
-                collector.ObserveShortEf(sfi, status, null, bytes, completion);
-                var sigs = ImageScan.Scan(bytes);
-                report.AppendLine($"• SFI {sfi:X2}: {status:X4}, {bytes.Length} bytes hidden" +
-                    (sigs.Count > 0 ? $"; {string.Join(", ", sigs)}" : ""));
+                if (body.Count >= SignatureCap)
+                    completion = "Incomplete: 4 KiB capture limit reached";
+            Finished:
+                collector.ObserveShortEf(sfi, initialStatus, null, body.ToArray(), completion,
+                    context, terminalStatus, reads);
+                var signatures = ImageScan.Scan(body.ToArray());
+                report.AppendLine($"• SFI {sfi:X2}: initial {initialStatus:X4}, terminal {terminalStatus:X4}, {body.Count} bytes hidden; {completion}" +
+                    (signatures.Count == 0 ? "" : $"; {string.Join(", ", signatures)}"));
             }
             catch (EmrtdException ex)
             {
-                collector.ObserveShortEf(sfi, 0xFFFF, null, [], ex.Message);
-                report.AppendLine($"• SFI {sfi:X2}: read failed: {ex.Message}");
+                collector.ObserveShortEf(sfi, initialStatus, null, body.ToArray(),
+                    $"Incomplete: session failed: {ex.Message}", context, null, reads);
+                report.AppendLine($"• SFI {sfi:X2}: session failed: {ex.Message}");
+                throw; // MAC/transport failures invalidate the session; do not keep probing.
             }
         }
     }
