@@ -330,7 +330,7 @@ public sealed class Pkcs15Collector
             if (verified.Count > 0)
                 Report.Findings.Add($"{verified.Count} certificate(s) chain to a pinned LAWtrust root offline; this confirms the issuing PKI and binds the subject (name and ID number) in the certificate, but revocation was not checked and this is not clone detection without Chip Authentication.");
             else
-                Report.Findings.Add("No on-chip certificate chained to a pinned LAWtrust root. Issuer trust is therefore unproven; the issuing CA may be a LAWtrust sub-CA not in the pinned bundle (check the certificate's AIA caIssuers URL).");
+                Report.Findings.Add("No on-chip certificate chained to a pinned LAWtrust root with the bundled issuer certificates. The issuer or another intermediate may be missing; this does not by itself show that a certificate is invalid or outside LAWtrust's PKI. Check AIA caIssuers when present.");
         }
         foreach (var key in Report.Objects.Where(x => x.Directory == "5002" && x.KeyIdHash is not null))
         {
@@ -453,7 +453,7 @@ public sealed class Pkcs15Collector
                 return $"Verified: chains to pinned {anchorName} ({chain.ChainElements.Count} elements); time validity and revocation not asserted here";
             if (reachedPinned)
                 return $"Chains to pinned {anchorName} but chain flagged: {statuses}";
-            return $"Unverified: does not chain to a pinned LAWtrust root ({statuses}). Issuing CA may be a LAWtrust sub-CA not published in the repository.";
+            return $"Unverified: no path to a pinned LAWtrust root was built with the bundled issuer certificates ({statuses}); an issuer or intermediate may be missing.";
         }
         catch (Exception ex) { return $"Chain build error: {ex.GetType().Name}"; }
     }

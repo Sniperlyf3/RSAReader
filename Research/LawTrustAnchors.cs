@@ -3,11 +3,10 @@ using System.Security.Cryptography.X509Certificates;
 namespace RSAReader.Research;
 
 // Pinned LAWtrust CA certificates, published at https://www.lawtrust.co.za/repository/.
-// LAWtrust operates the PKI behind the South African smart ID card's on-chip
-// certificate. Pinning these lets the app check, entirely offline, whether a
-// certificate read from the chip actually chains to a LAWtrust root — turning
-// "a certificate is present" into "issued by the expected PKI". The card cert's
-// policy OID 2.16.840.1.114028.10.2.1 (Entrust arc) matches the AeSign/AATL CAs.
+// Selected public certificates from LAWtrust's published CA repository. These
+// permit an offline chain check only when all issuer certificates on the card's
+// path are present. The observed cardholder certificates name DHA CA3 as issuer,
+// which is not included here; their shared policy OID is not chain evidence.
 // These are public CA certificates, not secrets: only their presence is trust-bearing.
 // Regenerated from the repository DER files; see docs/lawtrust-anchors.md.
 internal static class LawTrustAnchors
