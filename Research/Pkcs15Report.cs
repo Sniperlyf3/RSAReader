@@ -18,6 +18,11 @@ public sealed record ApplicationObservation(string Name, string Aid, int SelectS
     int FciLength, string? FciTagLengths);
 public sealed record ObjectObservation(string Directory, string Kind, string? Label, string? KeyIdHash,
     string? Path, string? Usage, string? Access, string? AuthReference);
+public sealed record ShortEfObservation(int Sfi, int SelectStatus, int? DeclaredSize, int BytesRead,
+    string? TlvTags, List<string> Signatures, string Completion);
+public sealed record SecurityInfoObservation(string Source, string Oid, string Name, string? Detail);
+public sealed record DiscoveredAidObservation(string RequestedPrefix, string? DiscoveredDfName,
+    int SelectStatus, int FciLength, string? FciTagLengths, string Occurrence);
 public sealed record CertificateObservation(string Path, string Fingerprint, string PublicKeyHash,
     string PublicKeyAlgorithm, string SignatureAlgorithm, string NotBefore, string NotAfter,
     string KeyUsage, string ExtendedKeyUsage, string BasicConstraints, string SubjectKeyIdentifier,
@@ -36,6 +41,9 @@ public sealed class Pkcs15Report
     public List<ApplicationObservation> Applications { get; init; } = [];
     public List<ObjectObservation> Objects { get; init; } = [];
     public List<CertificateObservation> Certificates { get; init; } = [];
+    public List<ShortEfObservation> ShortEfs { get; init; } = [];
+    public List<SecurityInfoObservation> SecurityInfos { get; init; } = [];
+    public List<DiscoveredAidObservation> DiscoveredAids { get; init; } = [];
     public List<string> Findings { get; init; } = [];
 
     public string ToJson() => JsonSerializer.Serialize(this, ResearchJsonContext.Default.Pkcs15Report);
@@ -60,6 +68,16 @@ public sealed class Pkcs15Report
                 (f.Error is null ? "" : $", {f.Error}"));
         foreach (var app in Applications)
             b.AppendLine($"Application {app.Name} ({app.Aid}): SELECT {app.SelectStatus:X4}, FCI request {app.FciStatus:X4}, {app.FciLength} FCI bytes, tags/lengths: {app.FciTagLengths ?? "unavailable"}");
+        foreach (var s in SecurityInfos)
+            b.AppendLine($"SecurityInfo [{s.Source}]: {s.Name} ({s.Oid})" + (s.Detail is null ? "" : $"; {s.Detail}"));
+        foreach (var e in ShortEfs)
+            b.AppendLine($"Short EF {e.Sfi} (SFI {e.Sfi:X2}): READ {(e.SelectStatus == 0xFFFF ? "FAILED" : e.SelectStatus.ToString("X4"))}, declared {e.DeclaredSize?.ToString() ?? "?"}, {e.BytesRead} bytes read; {e.Completion}" +
+                (e.TlvTags is null ? "" : $"; TLV tags/lengths: {e.TlvTags}") +
+                (e.Signatures.Count == 0 ? "" : $"; signatures: {string.Join(", ", e.Signatures)}"));
+        foreach (var a in DiscoveredAids)
+            b.AppendLine($"Partial-AID {a.Occurrence} for prefix {a.RequestedPrefix}: SELECT {a.SelectStatus:X4}" +
+                (a.DiscoveredDfName is null ? "" : $", DF name {a.DiscoveredDfName}") +
+                $", {a.FciLength} FCI bytes, tags/lengths: {a.FciTagLengths ?? "unavailable"}");
         foreach (var o in Objects) b.AppendLine($"{o.Directory}: {o.Kind}, label={o.Label ?? "?"}, path={o.Path ?? "?"}, key ID SHA-256={o.KeyIdHash ?? "?"}, usage={o.Usage ?? "?"}, access={o.Access ?? "?"}, auth ref={o.AuthReference ?? "?"}");
         foreach (var c in Certificates)
         {
@@ -174,6 +192,39 @@ public sealed class Pkcs15Collector
         var tags = DescribeTlv(data, ref error);
         Report.BiometricInformation.Add(new MetadataObservation(Convert.ToHexString(tag), status, data.Length, tags, error));
     }
+
+    public void ObserveSecurityInfos(IEnumerable<SecurityInfoObservation> infos) =>
+        Report.SecurityInfos.AddRange(infos);
+
+    public void ObserveShortEf(int sfi, int status, int? declaredSize, byte[] body, string completion)
+    {
+        // Content bytes stay local. Only the TLV shape and signature offsets are exported.
+        string? error = null;
+        var tags = DescribeTlv(body, ref error);
+        Report.ShortEfs.Add(new ShortEfObservation(sfi, status, declaredSize, body.Length, tags,
+            ImageScan.Scan(body), completion));
+    }
+
+    public void ObserveDiscoveredAid(byte[] requestedPrefix, int selectStatus, byte[] fci, string occurrence)
+    {
+        string? error = null;
+        var tags = DescribeTlv(fci, ref error);
+        string? dfName = null;
+        try
+        {
+            // The DF name (tag 84) is the applet identifier that was actually selected;
+            // it is a public identifier, not cardholder data, so record it as the find.
+            if (Asn1Tree.Read(fci).FirstOrDefault(x => x.Tag == 0x6F)?.Child(0x84)?.Value is { Length: > 0 } v)
+                dfName = Convert.ToHexString(v);
+        }
+        catch (FormatException) { }
+        Report.DiscoveredAids.Add(new DiscoveredAidObservation(Convert.ToHexString(requestedPrefix),
+            dfName, selectStatus, fci.Length, tags, occurrence));
+    }
+
+    // Inspect a certificate that did not come from a CDF path (e.g. a CMS signer cert
+    // embedded in EF.CardSecurity). Reuses the redacting certificate inspector.
+    public void ObserveEmbeddedCertificate(string source, byte[] der) => InspectCertificate(source, der);
 
     private static string? DescribeTlv(byte[] data, ref string? error)
     {

@@ -19,6 +19,15 @@ internal interface ISecureMessaging
     (int Status, byte[] Fci) TrySelectFileWithFci(byte[] fileId);
     /// <summary>GET DATA for a named two-byte BER tag, without changing card data.</summary>
     (int Status, byte[] Data) TryGetData(byte p1, byte p2);
+
+    /// <summary>READ BINARY addressing a short EF identifier (ISO 7816-4: P1 bit 8 set,
+    /// P1 bits 5-1 = SFI, P2 = offset). Read-only; selects the EF as a side effect.</summary>
+    (int Status, byte[] Data) ReadShortEf(int sfi, int offset, int length);
+
+    /// <summary>SELECT by DF name (P1=04). <paramref name="next"/> requests the next
+    /// matching occurrence (P2=02) instead of the first (P2=00). The name may be a
+    /// truncated AID prefix, letting undisclosed applets surface. Returns the FCI.</summary>
+    (int Status, byte[] Fci) TrySelectApplicationByName(byte[] name, bool next);
     void SelectApplication(byte[] aid);
     void SelectFile(byte[] fileId);
 
