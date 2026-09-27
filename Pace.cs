@@ -124,6 +124,9 @@ public sealed class Pace
     private PaceParameters ReadPaceParametersFromCardAccess()
     {
         var content = ReadEfCardAccess();
+        // Record the full SecurityInfo map (PACE, Chip Authentication, PACE-CAM,
+        // Terminal Authentication) before parsing the PACE profile we will use.
+        _collector?.ObserveSecurityInfos(Research.SecurityInfoDecoder.Decode("EF.CardAccess", content));
         var set = (Asn1Set)Asn1Object.FromByteArray(content);
         foreach (var entry in set)
         {
@@ -409,6 +412,31 @@ public sealed class Pace
         }
 
         _collector?.Report.Findings.Add("Cross-application candidates require the isolated probe button and a fresh physical retap for each candidate.");
+
+        // Read-only enumeration sweeps. These run last: they change the current
+        // selection and, at worst, degrade the session, so all directed reads above
+        // have already completed. They never write, verify a PIN, or authenticate.
+        if (_collector is not null)
+        {
+            try
+            {
+                // EF.CardSecurity lands the current DF on the MF, then sweep the MF's
+                // short EFs; re-select the PKCS#15 app and sweep its short EFs too.
+                ChipEnumeration.ReadCardSecurity(sm, _collector, report);
+                var mfContext = sm.TrySelectPath([0x3F, 0x00, 0x2F, 0x00]).Status;
+                report.AppendLine($"(MF selection for sweep: {mfContext:X4})");
+                ChipEnumeration.SweepShortEfs(sm, _collector, "master file", report);
+                var reselect = sm.TrySelectApplication(aid);
+                report.AppendLine($"(PKCS#15 app re-selection for sweep: {reselect:X4})");
+                ChipEnumeration.SweepShortEfs(sm, _collector, "PKCS#15 application", report);
+                ChipEnumeration.EnumerateAids(sm, _collector, report);
+            }
+            catch (EmrtdException ex)
+            {
+                _collector.Report.Findings.Add($"Enumeration sweep ended early: {ex.Message}");
+                report.AppendLine($"Enumeration sweep ended early: {ex.Message}");
+            }
+        }
 
         report.AppendLine();
         report.Append("Gemalto PKCS#15 application read over PACE. Certificate subjects and data-object contents above show what this CAN-authenticated channel exposes.");

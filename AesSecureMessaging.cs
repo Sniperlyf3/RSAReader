@@ -85,6 +85,19 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         return (status, data);
     }
 
+    public (int Status, byte[] Data) ReadShortEf(int sfi, int offset, int length)
+    {
+        if (sfi is < 1 or > 30) throw new ArgumentOutOfRangeException(nameof(sfi));
+        if (offset is < 0 or > 0xFF || length is < 1 or > 0xC0) throw new ArgumentOutOfRangeException(nameof(offset));
+        return SendRaw([0x0C, 0xB0, (byte)(0x80 | sfi), (byte)offset], null, true, (byte)length);
+    }
+
+    public (int Status, byte[] Fci) TrySelectApplicationByName(byte[] name, bool next)
+    {
+        if (name.Length is < 1 or > 16) throw new ArgumentException("Expected a 1-16 byte DF name.");
+        return SendRaw([0x0C, 0xA4, 0x04, (byte)(next ? 0x02 : 0x00)], name, true);
+    }
+
     public void SelectApplication(byte[] aid) => Ensure(TrySelectApplication(aid));
 
     public void SelectFile(byte[] fileId) => Ensure(TrySelectFile(fileId));

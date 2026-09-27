@@ -63,4 +63,67 @@ var opaque = System.Text.Encoding.ASCII.GetBytes("Label with a non-TLV length");
 var recovered = OpaqueFileRead.WholeFile((offset, length) => offset + length <= opaque.Length
     ? opaque.AsSpan(offset, length).ToArray() : []);
 if (!recovered.SequenceEqual(opaque)) throw new Exception("Opaque EF read stopped at a false TLV length.");
+
+// ----- Image signature scan ------------------------------------------------
+var scanBlob = Convert.FromHexString("0000FFD8FF00005F2E00");
+var scanHits = ImageScan.Scan(scanBlob);
+if (!scanHits.Any(h => h.StartsWith("JPEG candidate at 2")) ||
+    !scanHits.Any(h => h.Contains("5F2E candidate at 7")))
+    throw new Exception("Image/biometric signature scan missed a known marker.");
+
+// ----- SecurityInfo decoding (minimal DER built inline) --------------------
+static byte[] Tlv(int tag, params byte[][] parts)
+{
+    var body = parts.SelectMany(p => p).ToArray();
+    if (body.Length >= 0x80) throw new Exception("Test TLV bodies must be short-form.");
+    return new[] { (byte)tag, (byte)body.Length }.Concat(body).ToArray();
+}
+var oidTa = Tlv(0x06, Convert.FromHexString("04007F0007020202"));       // 0.4.0.127.0.7.2.2.2
+var oidCam = Tlv(0x06, Convert.FromHexString("04007F00070202040602"));  // 0.4.0.127.0.7.2.2.4.6.2
+var taInfo = Tlv(0x30, oidTa, Tlv(0x02, [0x01]));
+var camInfo = Tlv(0x30, oidCam);
+var securityInfos = Tlv(0x31, taInfo, camInfo);
+var decoded = SecurityInfoDecoder.Decode("EF.CardAccess", securityInfos);
+if (decoded.Count != 2 ||
+    !decoded.Any(s => s.Oid == "0.4.0.127.0.7.2.2.2" && s.Name.Contains("Terminal Authentication") && s.Detail == "integer parameters 1") ||
+    !decoded.Any(s => s.Oid == "0.4.0.127.0.7.2.2.4.6.2" && s.Name.Contains("PACE-CAM")))
+    throw new Exception("SecurityInfo protocol map did not decode as expected.");
+
+// ----- CMS SignedData certificate extraction (DER re-encode round-trip) ----
+var oidSignedData = Tlv(0x06, Convert.FromHexString("2A864886F70D010702"));
+var encapMin = Tlv(0x30, Tlv(0x06, [0x2A]));
+var innerCert = Tlv(0x30, Tlv(0x02, [0x07]));
+var certsSet = Tlv(0xA0, innerCert);
+var signedDataForCerts = Tlv(0x30, Tlv(0x02, [0x03]), Tlv(0x31), encapMin, certsSet, Tlv(0x31));
+var cmsForCerts = Tlv(0x30, oidSignedData, Tlv(0xA0, signedDataForCerts));
+var extractedCerts = SecurityInfoDecoder.ExtractSignedDataCertificates(cmsForCerts);
+if (extractedCerts.Count != 1 || Convert.ToHexString(extractedCerts[0]) != "3003020107")
+    throw new Exception("SignedData certificate extraction/DER re-encode failed.");
+
+// ----- CMS eContent extraction (CardSecurity SecurityInfos) ----------------
+var eSet = Tlv(0x31, taInfo);
+var encapWithContent = Tlv(0x30, Tlv(0x06, [0x2A]), Tlv(0xA0, Tlv(0x04, eSet)));
+var signedDataForEContent = Tlv(0x30, Tlv(0x02, [0x03]), Tlv(0x31), encapWithContent, Tlv(0x31));
+var cmsForEContent = Tlv(0x30, oidSignedData, Tlv(0xA0, signedDataForEContent));
+var eContent = SecurityInfoDecoder.ExtractEncapsulatedContent(cmsForEContent);
+if (eContent is null || !eContent.SequenceEqual(eSet) ||
+    !SecurityInfoDecoder.Decode("EF.CardSecurity", eContent).Any(s => s.Name.Contains("Terminal Authentication")))
+    throw new Exception("CardSecurity eContent extraction failed.");
+
+// ----- Enumeration observations survive the redacted round-trip ------------
+var probe = new Pkcs15Collector();
+probe.ObserveShortEf(0x1D, 0x9000, null, Convert.FromHexString("FFD8FFAABBCC"), "End of file or short read");
+probe.ObserveShortEf(0x0A, 0x6982, null, [], "File exists but is protected");
+probe.ObserveDiscoveredAid(Convert.FromHexString("A000000018"), 0x9000, Convert.FromHexString("6F03840100"), "first");
+probe.ObserveSecurityInfos(decoded);
+var probeBack = Pkcs15Report.FromJson(probe.Report.ToJson());
+if (probeBack.ShortEfs.Count != 2 ||
+    !probeBack.ShortEfs.Any(e => e.Sfi == 0x1D && e.Signatures.Any(s => s.StartsWith("JPEG"))) ||
+    !probeBack.ShortEfs.Any(e => e.Sfi == 0x0A && e.SelectStatus == 0x6982))
+    throw new Exception("Short EF observations did not round-trip.");
+if (probeBack.DiscoveredAids.Count != 1 || probeBack.DiscoveredAids[0].DiscoveredDfName != "00")
+    throw new Exception("Discovered AID DF name was not recorded.");
+if (probeBack.SecurityInfos.Count != 2)
+    throw new Exception("Security infos did not round-trip in the report.");
+
 Console.WriteLine("Research fixture replay and directory decoding passed.");

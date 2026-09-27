@@ -48,14 +48,7 @@ internal static class FileAudit
         else if (size > target) completion = "32 KiB limit reached";
     Finished:
         var body = bytes.ToArray();
-        var signatures = new List<string>();
-        foreach (var (name, marker) in new (string, byte[])[] {
-            ("JPEG", [0xFF, 0xD8, 0xFF]), ("JPEG2000 codestream", [0xFF, 0x4F, 0xFF, 0x51]),
-            ("JP2", [0,0,0,12,0x6A,0x50,0x20,0x20,13,10,0x87,10]), ("Face record", [0x46,0x41,0x43,0]) })
-        {
-            for (var i = 0; i <= body.Length - marker.Length && signatures.Count < 32; i++)
-                if (body.AsSpan(i, marker.Length).SequenceEqual(marker)) signatures.Add($"{name} candidate at {i}; not validated");
-        }
+        var signatures = ImageScan.Scan(body);
         return new(Convert.ToHexString(path), status, size, prefixLength, bytes.Count,
             body.Skip(prefixLength).Count(b => b is not (0 or 0xFF)), completion, reads, signatures);
     }
