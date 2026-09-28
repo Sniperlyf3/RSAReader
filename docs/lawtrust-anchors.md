@@ -1,9 +1,10 @@
 # LAWtrust trust anchors and certificate validation
 
-LAWtrust (LAW Trusted Third Party Services) operates the PKI behind the South
-African smart ID card's on-chip certificate. To turn "a certificate is present on
-the chip" into "the certificate was issued by the expected PKI", the app pins
-LAWtrust's published CA certificates and builds an **offline** chain against them.
+LAWtrust publishes a CA hierarchy relevant to South African smart ID certificate
+research. The app pins selected certificates from that repository and can build an
+**offline** chain when the card certificate and every required issuer certificate
+are available. A policy OID or matching issuer name alone does not establish that
+a card certificate chains to LAWtrust.
 
 ## What is pinned
 
@@ -24,12 +25,29 @@ All seven verify to one of the two pinned roots.
 
 ## Why these
 
-The card certificate's policy OID `2.16.840.1.114028.10.2.1` is on the Entrust arc
-(`2.16.840.1.114028`), which LAWtrust uses. On this repository that exact policy OID
-appears only on **AeSign CA1**, **AeSign CA2**, and **AATL CA01** — all chaining to
-`LAWtrust Root Certification Authority 2048`. The other CAs use LAWtrust's own arc
-(`1.3.6.1.4.1.54383.*`). Pinning both roots plus all seven issuing CAs lets any
-LAWtrust-issued leaf chain offline, while still reporting which anchor it reached.
+The card certificate's policy OID `2.16.840.1.114028.10.2.1` also appears on
+**AeSign CA1**, **AeSign CA2**, and **AATL CA01** in this repository. That overlap is
+a research lead, not proof of a certificate path. The bundle contains two roots
+and seven issuing CAs; a card certificate issued by a different intermediate still
+needs that intermediate certificate before an offline path can be built.
+
+### Result for the observed card certificates
+
+The trace supplied for the card shows both cardholder certificates naming
+`Home Affairs National ID Issuing CA3` as issuer. That issuer certificate is not
+among the two roots or seven issuing CAs pinned here. The trace's AIA metadata
+exposes an OCSP responder, but no `caIssuers` certificate URL. Therefore the
+current bundle cannot validate either certificate's issuer signature or build its
+chain. The trace predates the LAWtrust chain checker, and it does not contain a
+complete redacted export with a checker result, so there is no on-card `Verified`
+result to report. `Unverified` with this bundle means the chain could not be built;
+it does not prove the card certificate is invalid or unrelated to LAWtrust.
+
+To complete the check, the DHA CA3 issuer certificate (and any parent certificates
+between it and a pinned root) must be obtained from an authoritative source and
+added as chain-building material, then the checker must be run against the exact
+card certificates. The official [LAWtrust repository](https://www.lawtrust.co.za/repository/)
+lists the pinned LAWtrust hierarchy but does not list DHA CA3.
 
 ## How validation works
 
@@ -47,15 +65,17 @@ The result is one of:
   PKI and binds the subject (name and ID number) carried in the certificate.
 - **Chains to pinned … but chain flagged** — reached a pinned root but a status flag
   was raised.
-- **Unverified** — did not chain to a pinned root. The issuing CA may be a LAWtrust
-  sub-CA that is not published in the repository; the certificate's **AIA caIssuers**
-  URL (now extracted) usually points straight to that issuer certificate.
+- **Unverified** — did not chain to a pinned root. This can mean the issuer or
+  another intermediate is missing; it is not by itself proof that the certificate
+  is invalid or outside LAWtrust's PKI. Check **AIA caIssuers** when present. The
+  observed card certificates expose OCSP but no `caIssuers` URL.
 
 ## What this does and does not prove
 
-- ✅ The on-chip certificate was issued under LAWtrust's PKI.
-- ✅ The name and ID number **inside the certificate** are the values LAWtrust bound
-  at issuance (subject to revocation).
+- ✅ For a result explicitly marked **Verified**, the certificate chains to a
+  pinned LAWtrust root under the supplied chain-building material.
+- ✅ Such a result supports that the pinned PKI issued the certificate; it does not
+  establish live registry status or validate the portrait.
 - ❌ Not revocation: CRL/OCSP endpoints are extracted and reported, not checked here.
 - ❌ Not clone detection: a certificate can be copied. Only Chip Authentication /
   PACE-CAM would bind the certificate to this physical chip.
