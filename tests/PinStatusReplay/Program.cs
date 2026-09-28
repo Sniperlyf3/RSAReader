@@ -24,11 +24,11 @@ foreach (ISecureMessaging sm in new ISecureMessaging[]
     if (sent != before + 1) throw new Exception("VERIFY was retried.");
 }
 
-// Synthetic PKCS#15 record with AD00 and User PIN reference 81.
-var aodf = Convert.FromHexString("3016300630040402AD00A10C300A0A010180020081020101");
+// Metadata-only first AODF record from the observed card, including its two distinct IDs.
+var aodf = Convert.FromHexString("3061302C0C08557365722050494E030206C00402AD82301830060302052005003006030206400500300603020308050030040402AD00A12B30290303040C100A010102010502011002011080020081040100180F32303138303832313135333030355A");
 if (!PinStatusProbe.HasExpectedUserPin(aodf)) throw new Exception("Expected PIN metadata rejected.");
 var other = (byte[])aodf.Clone();
-other[^4] = 0x82;
+other[0x4E] = 0x82; // change the PIN reference, not the AD82 auth ID
 if (PinStatusProbe.HasExpectedUserPin(other)) throw new Exception("Wrong reference accepted.");
 if (!PinStatusProbe.Describe(0x63C3, 0).Contains("3 retries")) throw new Exception("Retry count lost.");
 if (PinStatusProbe.Describe(0x9000, 0).Contains("retries remaining")) throw new Exception("9000 misreported count.");
