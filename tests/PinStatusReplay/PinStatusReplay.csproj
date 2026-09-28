@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+    <Compile Include="../../ISecureMessaging.cs" Link="ISecureMessaging.cs" />
+    <Compile Include="../../AesSecureMessaging.cs" Link="AesSecureMessaging.cs" />
+    <Compile Include="../../SecureMessaging.cs" Link="SecureMessaging.cs" />
+    <Compile Include="../../Emrtd.cs" Link="Emrtd.cs" />
+    <Compile Include="../../SmRead.cs" Link="SmRead.cs" />
+    <Compile Include="../../Research/Asn1Tree.cs" Link="Asn1Tree.cs" />
+    <Compile Include="../../Research/OpaqueFileRead.cs" Link="OpaqueFileRead.cs" />
+    <Compile Include="../../Research/PinStatusProbe.cs" Link="PinStatusProbe.cs" />
+  </ItemGroup>
+</Project>

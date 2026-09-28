@@ -79,6 +79,11 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         return (status, fci);
     }
 
+    // ISO 7816-4 VERIFY with absent verification data and absent inner Le.
+    // Fixed reference: deliberately no API for supplying a PIN or probing other references.
+    public (int Status, byte[] Data) QueryUserPinStatus() =>
+        SendRaw([0x0C, 0x20, 0x00, 0x81], null, false);
+
     public (int Status, byte[] Data) TryGetData(byte p1, byte p2)
     {
         var (status, data) = SendRaw(new byte[] { 0x0C, 0xCA, p1, p2 }, null, true);

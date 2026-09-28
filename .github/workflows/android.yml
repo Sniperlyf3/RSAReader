@@ -27,6 +27,11 @@ jobs:
       - name: Restore
         run: dotnet restore RSAReader.csproj -r android-arm64
 
+      - name: Replay research and PIN status checks
+        run: |
+          dotnet run --project tests/ResearchReplay/ResearchReplay.csproj
+          dotnet run --project tests/PinStatusReplay/PinStatusReplay.csproj
+
       - name: Validate Release build for pull requests
         if: github.event_name == 'pull_request'
         run: dotnet publish RSAReader.csproj -f net9.0-android -c Release -r android-arm64 -o artifacts
