@@ -71,6 +71,7 @@ public sealed class MainPage : ContentPage
         Placeholder = "Raw APDU log (TX/RX hex) appears here after a read."
     };
     private Pkcs15Report? _researchReport;
+    private IReadOnlyList<RawDumpEntry>? _rawFiles;
     private readonly Switch _includePlain = new();
     private readonly Picker _candidate = new() { Title = "One application per fresh tap", ItemsSource = new[] {
         "GemP15 (control)", "ICAO LDS1", "NDEF", "PIV", "PKCS#15 standard" }, SelectedIndex = 0 };
@@ -86,6 +87,23 @@ public sealed class MainPage : ContentPage
         try { if (Directory.Exists(TraceDirectory)) Directory.Delete(TraceDirectory, true); }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
+    }
+
+    private async Task ExportDumpAsync()
+    {
+        if (_rawFiles is not { Count: > 0 })
+        { await DisplayAlert("No readable files", "Run a PACE scan first.", "OK"); return; }
+        var confirm = await DisplayAlert("Sensitive chip data", "This ZIP contains unredacted identity and certificate bytes. It is not encrypted. Save it only in a private location and do not upload it publicly. Export?", "Export", "Cancel");
+        if (!confirm) return;
+        try
+        {
+            Directory.CreateDirectory(TraceDirectory);
+            var path = Path.Combine(TraceDirectory, "rsareader-sensitive-files.zip");
+            await using (var output = File.Create(path)) RawDumpArchive.Write(output, _rawFiles);
+            await Share.Default.RequestAsync(new ShareFileRequest("Sensitive NFC file dump", new ShareFile(path, "application/zip")));
+            _status.Text = "File dump shared. Clear displayed information deletes the local export.";
+        }
+        catch (Exception ex) { await DisplayAlert("Dump export failed", ex.Message, "OK"); }
     }
 
     private async Task ExportRawAsync(bool copy)
@@ -147,6 +165,8 @@ public sealed class MainPage : ContentPage
         copyRaw.Clicked += async (_, _) => await ExportRawAsync(true);
         var shareRaw = new Button { Text = "Share raw trace file (sensitive)" };
         shareRaw.Clicked += async (_, _) => await ExportRawAsync(false);
+        var exportDump = new Button { Text = "Export captured chip files (sensitive ZIP)" };
+        exportDump.Clicked += async (_, _) => await ExportDumpAsync();
         var research = new Button { Text = "Open PKCS#15 research" };
         research.Clicked += async (_, _) =>
         {
@@ -179,6 +199,7 @@ public sealed class MainPage : ContentPage
             _includePlain.IsToggled = false;
             ClearTraceFiles();
             _researchReport = null;
+            _rawFiles = null;
             _scan.Text = "Hold a Smart ID against the phone. The app does not save card data.";
             _status.Text = "Ready to scan";
 #if ANDROID
@@ -246,6 +267,7 @@ public sealed class MainPage : ContentPage
                     _paceLog,
                     copyRaw,
                     shareRaw,
+                    exportDump,
                     research,
                     new Label { Text = "Manual fallback: SA ID number", FontSize = 20, FontAttributes = FontAttributes.Bold },
                     new Label
@@ -463,6 +485,7 @@ public sealed class MainPage : ContentPage
         _paceOutput.Text = "Authenticating with the chip (PACE)… Keep the card against the phone.";
         _paceLog.Text = "";
         _researchReport = null;
+        _rawFiles = null;
         _rawDiagnostic = "";
         ClearTraceFiles();
         var collector = new Pkcs15Collector();
@@ -481,6 +504,7 @@ public sealed class MainPage : ContentPage
         }
         finally
         {
+            _rawFiles = collector.SnapshotRawFiles();
             try { _researchReport = collector.Analyze(); }
             catch (Exception ex)
             {
