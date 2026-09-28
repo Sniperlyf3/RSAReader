@@ -25,9 +25,11 @@ internal static class PinStatusProbe
     {
         try
         {
+            // The object identifier is the second top-level SEQUENCE (30 04 04 02 AD 00).
+            // The first SEQUENCE contains the label, flags, and the separate AD82 auth ID.
             var matches = Asn1Tree.Read(directory).Where(n => n.Tag == 0x30 &&
-                n.Children.Count >= 2 && n.Children[0].Tag == 0x30 &&
-                n.Children[0].Descendants(0x04).Any(id => id.Value is [0xAD, 0x00])).ToList();
+                n.Children.Count >= 3 && n.Children[1].Tag == 0x30 &&
+                n.Children[1].Child(0x04)?.Value is [0xAD, 0x00]).ToList();
             if (matches.Count != 1) return false;
             var attrs = matches[0].Child(0xA1)?.Child(0x30);
             return (attrs?.Child(0x80)?.Value is [0x00, 0x81] or [0x81]) &&
