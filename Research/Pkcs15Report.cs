@@ -120,6 +120,21 @@ public sealed class Pkcs15Collector
     private readonly List<(int Sfi, string Context, byte[] Bytes, ShortEfObservation Obs)> _shortEfCaptures = [];
     public Pkcs15Report Report { get; } = new();
 
+    // Explicit opt-in local raw export. Never serialize these bytes in the redacted report.
+    public IReadOnlyList<RawDumpEntry> SnapshotRawFiles()
+    {
+        var entries = new List<RawDumpEntry>();
+        foreach (var file in _raw)
+            entries.Add(new RawDumpEntry($"known/{file.Key}.bin", file.Value.ToArray(), "observed read; completeness not established"));
+        foreach (var cap in _shortEfCaptures)
+        {
+            var context = cap.Context == "master file" ? "mf" : cap.Context == "PKCS#15 application" ? "pkcs15" : "other";
+            entries.Add(new RawDumpEntry($"sfi/{context}/{cap.Sfi:X2}.bin", cap.Bytes.ToArray(), cap.Obs.Completion));
+        }
+        return entries;
+    }
+
+
     public void Observe(string name, byte[] fid, int status, byte[] data, string? error = null)
     {
         var path = Convert.ToHexString(fid);
