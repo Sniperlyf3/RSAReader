@@ -161,6 +161,8 @@ public sealed class MainPage : ContentPage
         readChipPace.Clicked += async (_, _) => await ReadChipPaceAsync(readChipPace);
         var isolated = new Button { Text = "Probe selected application (fresh tap)" };
         isolated.Clicked += async (_, _) => await ReadChipPaceAsync(isolated, true);
+        var pinStatus = new Button { Text = "Check User PIN retries (fresh tap)" };
+        pinStatus.Clicked += async (_, _) => await ReadChipPaceAsync(pinStatus, queryPinStatus: true);
         var copyRaw = new Button { Text = "Copy raw trace (sensitive)" };
         copyRaw.Clicked += async (_, _) => await ExportRawAsync(true);
         var shareRaw = new Button { Text = "Share raw trace file (sensitive)" };
@@ -258,6 +260,8 @@ public sealed class MainPage : ContentPage
                     _candidate,
                     _customAid,
                     isolated,
+                    new Label { Text = "PIN status sends one query without a PIN. Card support is unconfirmed; unsupported responses stop the experiment. Use the same PACE access number that already works." },
+                    pinStatus,
                     _paceOutput,
                     new Label
                     {
@@ -424,7 +428,7 @@ public sealed class MainPage : ContentPage
 #endif
     }
 
-    private async Task ReadChipPaceAsync(Button readButton, bool isolated = false)
+    private async Task ReadChipPaceAsync(Button readButton, bool isolated = false, bool queryPinStatus = false)
     {
 #if ANDROID
         if (_apduBusy) return;
@@ -451,7 +455,7 @@ public sealed class MainPage : ContentPage
         var can = _canInput.Text ?? "";
         var log = new StringBuilder();
         log.AppendLine($"RSAReader trace v2; UTC {DateTime.UtcNow:O}; app {AppInfo.Current.VersionString}/{AppInfo.Current.BuildString}");
-        log.AppendLine($"Experiment: {(isolated ? Convert.ToHexString(probeAid!) : "known-file audit")}; decrypted={includePlain}");
+        log.AppendLine($"Experiment: {(queryPinStatus ? "User PIN status only" : isolated ? Convert.ToHexString(probeAid!) : "known-file audit")}; decrypted={includePlain}");
         log.AppendLine(_scan.Text);
         var truncated = false;
         void AppendTrace(string line)
@@ -491,7 +495,7 @@ public sealed class MainPage : ContentPage
         var collector = new Pkcs15Collector();
         try
         {
-            var result = await Task.Run(() => new Pace(logged, collector, includePlain ? AppendTrace : null, probeAid).ReadDg1WithCan(can));
+            var result = await Task.Run(() => new Pace(logged, collector, includePlain ? AppendTrace : null, probeAid, queryPinStatus).ReadDg1WithCan(can));
             _paceOutput.Text = result.Summary;
         }
         catch (EmrtdException ex)

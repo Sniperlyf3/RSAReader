@@ -9,6 +9,8 @@ namespace RSAReader;
 internal interface ISecureMessaging
 {
     Action<string>? Trace { get; set; }
+    /// <summary>One empty-data VERIFY status query for the observed User PIN (81); no PIN submission.</summary>
+    (int Status, byte[] Data) QueryUserPinStatus();
     (int Status, byte[] Data) ReadAt(int offset, int length);
     (int Status, byte[] Fci) TrySelectPath(byte[] path);
     int TrySelectApplication(byte[] aid);

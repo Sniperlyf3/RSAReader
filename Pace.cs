@@ -32,14 +32,17 @@ public sealed class Pace
     private readonly Pkcs15Collector? _collector;
     private readonly Action<string>? _trace;
     private readonly byte[]? _probeAid;
+    private readonly bool _queryPinStatus;
     private byte[]? _selectedAid;
 
-    public Pace(Func<byte[], byte[]> transceive, Pkcs15Collector? collector = null, Action<string>? trace = null, byte[]? probeAid = null)
+    public Pace(Func<byte[], byte[]> transceive, Pkcs15Collector? collector = null, Action<string>? trace = null, byte[]? probeAid = null, bool queryPinStatus = false)
     {
         _transceive = transceive;
         _collector = collector;
         _trace = trace;
+        if (queryPinStatus && probeAid is not null) throw new ArgumentException("Choose one PACE experiment.");
         _probeAid = probeAid;
+        _queryPinStatus = queryPinStatus;
     }
 
     private enum CipherAlg { Aes, TripleDes }
@@ -213,6 +216,12 @@ public sealed class Pace
             : new SecureMessaging(_transceive, ksEnc, ksMac, new byte[8]);
 
         sm.Trace = _trace;
+        if (_queryPinStatus)
+        {
+            var summary = Research.PinStatusProbe.Run(sm);
+            _collector?.Report.Findings.Add(summary);
+            return new Emrtd.Result(string.Empty, summary);
+        }
         var report = new StringBuilder();
         report.AppendLine("PACE OK. Card structure probe:");
 
