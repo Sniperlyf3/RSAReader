@@ -38,6 +38,7 @@ public static class RawDumpArchive
         var index = archive.CreateEntry("manifest.json");
         using var stream = index.Open();
         JsonSerializer.Serialize(stream, new RawDumpManifest(1, DateTime.UtcNow.ToString("O"),
-            "Readable bytes captured during the last PACE scan only; NOT a complete chip image.", manifest));
+            "Readable bytes captured during the last PACE scan only; NOT a complete chip image.", manifest),
+            ResearchJsonContext.Default.RawDumpManifest);
     }
 }

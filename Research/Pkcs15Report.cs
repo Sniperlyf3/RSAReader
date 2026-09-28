@@ -601,4 +601,5 @@ public sealed class Pkcs15Collector
 
 [JsonSourceGenerationOptions(WriteIndented = true)]
 [JsonSerializable(typeof(Pkcs15Report))]
+[JsonSerializable(typeof(RawDumpManifest))]
 internal partial class ResearchJsonContext : JsonSerializerContext;
