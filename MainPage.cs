@@ -61,6 +61,13 @@ public sealed class MainPage : ContentPage
         Keyboard = Keyboard.Numeric,
         MaxLength = 16
     };
+    private readonly Entry _userPinInput = new()
+    {
+        Placeholder = "One User PIN candidate (5–16 digits)",
+        Keyboard = Keyboard.Numeric,
+        MaxLength = 16,
+        IsPassword = true
+    };
     private readonly Label _paceOutput = new() { Text = "No chip read attempted.", LineBreakMode = LineBreakMode.WordWrap };
     private readonly Editor _paceLog = new()
     {
@@ -163,6 +170,8 @@ public sealed class MainPage : ContentPage
         isolated.Clicked += async (_, _) => await ReadChipPaceAsync(isolated, true);
         var pinStatus = new Button { Text = "Check User PIN retries (fresh tap)" };
         pinStatus.Clicked += async (_, _) => await ReadChipPaceAsync(pinStatus, queryPinStatus: true);
+        var tryPin = new Button { Text = "Try one User PIN (fresh tap)" };
+        tryPin.Clicked += async (_, _) => await ReadChipPaceAsync(tryPin, checkPin: true);
         var copyRaw = new Button { Text = "Copy raw trace (sensitive)" };
         copyRaw.Clicked += async (_, _) => await ExportRawAsync(true);
         var shareRaw = new Button { Text = "Share raw trace file (sensitive)" };
@@ -195,6 +204,7 @@ public sealed class MainPage : ContentPage
             _bacExpInput.Text = "";
             _bacOutput.Text = "No chip read attempted.";
             _canInput.Text = "";
+            _userPinInput.Text = "";
             _paceOutput.Text = "No chip read attempted.";
             _paceLog.Text = "";
             _rawDiagnostic = "";
@@ -260,8 +270,11 @@ public sealed class MainPage : ContentPage
                     _candidate,
                     _customAid,
                     isolated,
-                    new Label { Text = "PIN status sends one query without a PIN. Card support is unconfirmed; unsupported responses stop the experiment. Use the same PACE access number that already works." },
+                    new Label { Text = "PIN status sends one query without a PIN. The observed card returned five remaining retries. Use the same PACE access number that already works." },
                     pinStatus,
+                    new Label { Text = "One PIN check may use one retry. The app first checks the current counter and stops if it cannot read it or only one retry remains. Enter one candidate on each fresh tap. The candidate is cleared and omitted from the trace." },
+                    _userPinInput,
+                    tryPin,
                     _paceOutput,
                     new Label
                     {
@@ -428,7 +441,7 @@ public sealed class MainPage : ContentPage
 #endif
     }
 
-    private async Task ReadChipPaceAsync(Button readButton, bool isolated = false, bool queryPinStatus = false)
+    private async Task ReadChipPaceAsync(Button readButton, bool isolated = false, bool queryPinStatus = false, bool checkPin = false)
     {
 #if ANDROID
         if (_apduBusy) return;
@@ -443,6 +456,19 @@ public sealed class MainPage : ContentPage
             _paceOutput.Text = "Remove the card from the phone, then tap it again before this experiment.";
             return;
         }
+        byte[]? pinBytes = null;
+        if (checkPin)
+        {
+            var candidate = _userPinInput.Text ?? "";
+            if (candidate.Length is < 5 or > 16 || candidate.Any(c => c is < '0' or > '9'))
+            { _paceOutput.Text = "Enter 5–16 decimal digits for one User PIN candidate."; return; }
+            var confirmed = await DisplayAlert("Use one PIN retry?",
+                "A wrong User PIN can reduce the card's retry counter. This action checks the counter, then submits this one candidate only if at least two retries remain. Continue?",
+                "Submit once", "Cancel");
+            if (!confirmed) return;
+            pinBytes = System.Text.Encoding.ASCII.GetBytes(candidate);
+            _userPinInput.Text = "";
+        }
         var probeAid = isolated ? Convert.FromHexString(CandidateAids[Math.Max(0, _candidate.SelectedIndex)]) : null;
         if (isolated && !string.IsNullOrWhiteSpace(_customAid.Text))
         {
@@ -455,7 +481,7 @@ public sealed class MainPage : ContentPage
         var can = _canInput.Text ?? "";
         var log = new StringBuilder();
         log.AppendLine($"RSAReader trace v2; UTC {DateTime.UtcNow:O}; app {AppInfo.Current.VersionString}/{AppInfo.Current.BuildString}");
-        log.AppendLine($"Experiment: {(queryPinStatus ? "User PIN status only" : isolated ? Convert.ToHexString(probeAid!) : "known-file audit")}; decrypted={includePlain}");
+        log.AppendLine($"Experiment: {(checkPin ? "one User PIN attempt" : queryPinStatus ? "User PIN status only" : isolated ? Convert.ToHexString(probeAid!) : "known-file audit")}; decrypted={includePlain}");
         log.AppendLine(_scan.Text);
         var truncated = false;
         void AppendTrace(string line)
@@ -468,6 +494,7 @@ public sealed class MainPage : ContentPage
         // Wrap the transceiver so every command/response pair is captured as hex.
         Func<byte[], byte[]> logged = command =>
         {
+            var redactedVerify = checkPin && command.Length > 6 && command[1] == 0x20 && command[5] == 0x87;
             byte[] response;
             try
             {
@@ -475,12 +502,12 @@ public sealed class MainPage : ContentPage
             }
             catch (Exception ex)
             {
-                AppendTrace($"TX {Convert.ToHexString(command)}");
+                AppendTrace(redactedVerify ? "TX <protected User PIN VERIFY redacted>" : $"TX {Convert.ToHexString(command)}");
                 AppendTrace($"RX <error: {ex.GetType().Name}: {ex.Message}>");
                 throw;
             }
-            AppendTrace($"TX {Convert.ToHexString(command)}");
-            AppendTrace($"RX {Convert.ToHexString(response)}");
+            AppendTrace(redactedVerify ? "TX <protected User PIN VERIFY redacted>" : $"TX {Convert.ToHexString(command)}");
+            AppendTrace(redactedVerify ? "RX <protected User PIN VERIFY response redacted>" : $"RX {Convert.ToHexString(response)}");
             return response;
         };
 
@@ -495,7 +522,7 @@ public sealed class MainPage : ContentPage
         var collector = new Pkcs15Collector();
         try
         {
-            var result = await Task.Run(() => new Pace(logged, collector, includePlain ? AppendTrace : null, probeAid, queryPinStatus).ReadDg1WithCan(can));
+            var result = await Task.Run(() => new Pace(logged, collector, includePlain ? AppendTrace : null, probeAid, queryPinStatus, pinBytes).ReadDg1WithCan(can));
             _paceOutput.Text = result.Summary;
         }
         catch (EmrtdException ex)
@@ -508,6 +535,8 @@ public sealed class MainPage : ContentPage
         }
         finally
         {
+            if (pinBytes is not null) System.Security.Cryptography.CryptographicOperations.ZeroMemory(pinBytes);
+            _userPinInput.Text = "";
             _rawFiles = collector.SnapshotRawFiles();
             try { _researchReport = collector.Analyze(); }
             catch (Exception ex)
