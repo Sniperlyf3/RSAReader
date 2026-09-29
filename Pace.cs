@@ -33,16 +33,19 @@ public sealed class Pace
     private readonly Action<string>? _trace;
     private readonly byte[]? _probeAid;
     private readonly bool _queryPinStatus;
+    private readonly byte[]? _userPinCandidate;
     private byte[]? _selectedAid;
 
-    public Pace(Func<byte[], byte[]> transceive, Pkcs15Collector? collector = null, Action<string>? trace = null, byte[]? probeAid = null, bool queryPinStatus = false)
+    public Pace(Func<byte[], byte[]> transceive, Pkcs15Collector? collector = null, Action<string>? trace = null, byte[]? probeAid = null, bool queryPinStatus = false, byte[]? userPinCandidate = null)
     {
         _transceive = transceive;
         _collector = collector;
         _trace = trace;
-        if (queryPinStatus && probeAid is not null) throw new ArgumentException("Choose one PACE experiment.");
+        if ((queryPinStatus ? 1 : 0) + (probeAid is not null ? 1 : 0) + (userPinCandidate is not null ? 1 : 0) > 1)
+            throw new ArgumentException("Choose one PACE experiment.");
         _probeAid = probeAid;
         _queryPinStatus = queryPinStatus;
+        _userPinCandidate = userPinCandidate;
     }
 
     private enum CipherAlg { Aes, TripleDes }
@@ -219,6 +222,12 @@ public sealed class Pace
         if (_queryPinStatus)
         {
             var summary = Research.PinStatusProbe.Run(sm);
+            _collector?.Report.Findings.Add(summary);
+            return new Emrtd.Result(string.Empty, summary);
+        }
+        if (_userPinCandidate is not null)
+        {
+            var summary = Research.PinStatusProbe.TryOneCandidate(sm, _userPinCandidate);
             _collector?.Report.Findings.Add(summary);
             return new Emrtd.Result(string.Empty, summary);
         }

@@ -84,6 +84,12 @@ internal sealed class AesSecureMessaging : ISecureMessaging
     public (int Status, byte[] Data) QueryUserPinStatus() =>
         SendRaw([0x0C, 0x20, 0x00, 0x81], null, false);
 
+    public (int Status, byte[] Data) VerifyUserPin(byte[] formattedPin)
+    {
+        if (formattedPin.Length != 16) throw new ArgumentException("Expected the card-declared 16-byte PIN format.");
+        return SendRaw([0x0C, 0x20, 0x00, 0x81], formattedPin, false);
+    }
+
     public (int Status, byte[] Data) TryGetData(byte p1, byte p2)
     {
         var (status, data) = SendRaw(new byte[] { 0x0C, 0xCA, p1, p2 }, null, true);
@@ -181,7 +187,9 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         var body = Emrtd.Concat(do87, do97, do8E);
         var apdu = Emrtd.Concat(header, EncodeLength(body.Length), body, new byte[] { 0x00 });
 
-        Trace?.Invoke($"PLAIN TX {Convert.ToHexString(header)} DATA={Convert.ToHexString(commandData ?? [])} Le={(expectResponse ? le.ToString("X2") : "none")}");
+        var sensitive = header[1] == 0x20 && commandData is { Length: > 0 };
+        Trace?.Invoke(sensitive ? "PLAIN TX 0C200081 DATA=[redacted PIN] Le=none" :
+            $"PLAIN TX {Convert.ToHexString(header)} DATA={Convert.ToHexString(commandData ?? [])} Le={(expectResponse ? le.ToString("X2") : "none")}");
         var resp = _transceive(apdu);
         if (resp is null || resp.Length < 2) throw new EmrtdException("No secure-messaging response.");
         var sw = (resp[^2] << 8) | resp[^1];
@@ -192,7 +200,8 @@ internal sealed class AesSecureMessaging : ISecureMessaging
         if (resp.Length == 2)
             throw new EmrtdException($"Unprotected response {sw:X4}; end this session and retap.");
         var plain = VerifyAndExtract(resp[..^2], out var innerStatus);
-        Trace?.Invoke($"PLAIN RX SW={innerStatus:X4} OUTER={sw:X4} DATA={Convert.ToHexString(plain)}");
+        Trace?.Invoke(sensitive ? $"PLAIN RX SW={innerStatus:X4} OUTER={sw:X4} DATA=[redacted]" :
+            $"PLAIN RX SW={innerStatus:X4} OUTER={sw:X4} DATA={Convert.ToHexString(plain)}");
         return (innerStatus, plain);
     }
 

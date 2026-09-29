@@ -11,6 +11,8 @@ internal interface ISecureMessaging
     Action<string>? Trace { get; set; }
     /// <summary>One empty-data VERIFY status query for the observed User PIN (81); no PIN submission.</summary>
     (int Status, byte[] Data) QueryUserPinStatus();
+    /// <summary>Submit one already formatted User PIN to reference 81. May consume a retry.</summary>
+    (int Status, byte[] Data) VerifyUserPin(byte[] formattedPin);
     (int Status, byte[] Data) ReadAt(int offset, int length);
     (int Status, byte[] Fci) TrySelectPath(byte[] path);
     int TrySelectApplication(byte[] aid);
